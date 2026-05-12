@@ -35,27 +35,32 @@ Build in **thin vertical slices**. Finish each phase before starting the next un
 
 ## Phase 2 — Basic CI (GitHub Actions)
 
-**Goal:** **Every PR** runs the same checks your machine runs — no AWS, no Terraform.
+**Goal:** **Every PR** runs **build**, **tests**, and **C# code lint/format** checks — no AWS, no Terraform.
 
 **Depends on:** Phase 1 complete (something to build and test).
 
 **Deliverables**
 
 - `.github/workflows/ci.yml` (or split files later) triggered on **`pull_request`** and **`push`** to **`main`** (adjust branches to your branching model).
-- Job steps: checkout → **setup-dotnet** (pin SDK version to match `global.json` / repo) → **restore** → **build** → **test**.
+- Job steps: checkout → **setup-dotnet** (pin SDK version to match `global.json` / repo) → **restore** → **`dotnet format --verify-no-changes`** → **build** → **test**.
+  - **`dotnet format`** enforces whitespace/style against **`.editorconfig`** (commit one at repo root; use the .NET defaults if you have no custom rules yet).
+  - Run **format after `restore`** so analyzers and workspace load correctly; use **`--verbosity diagnostic`** only when debugging CI.
 - At least **one** non-empty test (e.g. asserts heartbeat route exists or a trivial unit test) so **`dotnet test`** is meaningful.
 - **Optional:** `actions/cache` for NuGet (`~/.nuget/packages`).
+- **Optional (stricter):** `dotnet build --warnaserror` or `/p:TreatWarningsAsErrors=true` in CI only — add when the codebase is clean enough that noise does not block every PR.
 
 **Done when**
 
 - [ ] CI passes on a PR touching only app code.
+- [ ] **Misformatted or style-violating** code fails CI (verify once with a deliberate bad formatting commit on a throwaway branch).
 - [ ] Failing test fails CI (verify once with a throwaway branch).
 - [ ] No secrets required for the workflow.
 
 **Tips**
 
 - Pin **.NET version** explicitly in the workflow to avoid “works on my machine” drift.
-- Add **`dotnet format`** or analyzers later (Phase 8+); not required here.
+- If your SDK does not include **`dotnet format`**, add **`.config/dotnet-tools.json`** and run **`dotnet tool restore`** then **`dotnet tool run dotnet-format`** (see current Microsoft docs for the exact package name and args).
+- **Roslyn analyzers** / `EnableNETAnalyzers` can stay at default severity in Phase 2; ratchet **warn-as-error** in a later phase if desired.
 
 ---
 
@@ -222,7 +227,7 @@ Build in **thin vertical slices**. Finish each phase before starting the next un
 
 **Rule**
 
-- Each PR: **`dotnet` build + test** green; **`terraform fmt -check` / `validate` / `plan`** green where infra touched.
+- Each PR: **`dotnet format --verify-no-changes`**, **build**, and **test** green (Phase 2); **`terraform fmt -check` / `validate` / `plan`** green where infra touched (Phase 5+).
 - **`terraform apply`**: only from protected workflow + credentials you control.
 
 ---
@@ -232,7 +237,7 @@ Build in **thin vertical slices**. Finish each phase before starting the next un
 | Phase | Focus |
 |-------|--------|
 | **1** | Heartbeat only |
-| **2** | GitHub Actions build + test |
+| **2** | GitHub Actions: **format/lint**, build, test |
 | **3** | Environment config (small, optional) |
 | **4** | Mock `GET /weather` + tests |
 | **5** | Terraform fmt / validate / plan in CI |

@@ -7,7 +7,7 @@ This folder holds **design and delivery documentation** for the project (archite
 | Document | Purpose |
 |----------|---------|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | System architecture, AWS/Terraform shape, resilience, observability, environments, CI/CD, and open decisions. |
-| [PHASES.md](./PHASES.md) | **Phased build plan** (heartbeat → CI → mock API → Terraform → **Open-Meteo** → plan/package → hardening). |
+| [PHASES.md](./PHASES.md) | **Phased build plan** (heartbeat → CI with **format/lint** + build + test → mock API → Terraform → **Open-Meteo** → plan/package → hardening). |
 | [diagrams/README.md](./diagrams/README.md) | Standalone **Mermaid** diagrams (system context, caches, resilience, CI/CD, environments). |
 | [design/README.md](./design/README.md) | Short design capsules (deployment strategies, links into `ARCHITECTURE.md`). |
 | [design/adr/README.md](./design/adr/README.md) | **Architecture Decision Records (ADRs)** — we will add ADRs here for major settled decisions. |
