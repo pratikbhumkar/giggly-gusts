@@ -26,24 +26,69 @@ curl -sS -i http://localhost:5025/health
 
 You should see JSON with **`"environment":"Development"`** and a **`diagnostics`** object (non-secret) because [`appsettings.Development.json`](./src/GigglyGusts.Host/appsettings.Development.json) sets **`Health:IncludeDiagnostics`** to **true**.
 
-### `GET /weather` (mock provider only)
+### `GET /weather` (mock or live)
 
-**Open-Meteo and other live weather HTTP clients are not used in this phase** — responses come from an in-process **`MockWeatherProvider`** behind **`IWeatherProvider`** (swap-friendly for a later phase).
+The endpoint is the same in both modes; only the **`source`** field on a successful response changes (`live` vs `fallback`). The JSON contract from Phase 4 is unchanged: **`city`**, **`tempC`**, **`condition`**, **`source`**, **`correlationId`** (matches **`X-Correlation-Id`** when the client sends one).
 
 **Australia-only rule:** `city` is **trimmed** and compared using a **normalized uppercase key** against an **allowlist** in [`AustralianCityCatalog`](./src/GigglyGusts.Host/Weather/AustralianCityCatalog.cs): **Sydney, Melbourne, Brisbane, Perth, Adelaide, Hobart, Darwin, Canberra**. Any other value (including non-AU cities) returns **400** with **ProblemDetails** (and **`Cache-Control: no-store`**). Successful responses use **`Cache-Control: public, max-age=120`**.
 
-Success JSON (stable field names): **`city`**, **`tempC`**, **`condition`**, **`source`** (`fallback` for mock, matching **`live` \| `fallback`** in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)), **`correlationId`** (matches **`X-Correlation-Id`** when the client sends one).
+#### Mock only (default)
+
+`USE_OPEN_METEO=false`. No outbound HTTP; the static AU table answers every valid request with **`source=fallback`**.
 
 ```bash
-# Valid allowlisted city (200 + JSON contract)
-curl -sS -i "http://localhost:5025/weather?city=Sydney"
+dotnet run --project src/GigglyGusts.Host/GigglyGusts.Host.csproj
 
-# Invalid: empty city after trim (400 + ProblemDetails, no-store)
-curl -sS -i "http://localhost:5025/weather?city="
-
-# Non-allowlisted / non-AU example (400 + ProblemDetails, no-store)
-curl -sS -i "http://localhost:5025/weather?city=Paris"
+curl -sS -i "http://localhost:5025/weather?city=Sydney"     # 200, source=fallback
+curl -sS -i "http://localhost:5025/weather?city="            # 400, no-store, ProblemDetails
+curl -sS -i "http://localhost:5025/weather?city=Paris"       # 400, no-store, ProblemDetails
 ```
+
+#### Live Open-Meteo (Phase 6)
+
+Flip the kill-switch on and the host calls Open-Meteo for each valid city; on bounded failure it falls back to the AU table:
+
+```bash
+Weather__UseOpenMeteo=true \
+  dotnet run --project src/GigglyGusts.Host/GigglyGusts.Host.csproj
+
+curl -sS "http://localhost:5025/weather?city=Sydney"   # 200, source=live (Open-Meteo)
+```
+
+**Live path failure policy (Option A, documented).** When the Open-Meteo pipeline exhausts its retry budget or hits a defensive non-retryable failure (e.g. malformed JSON), the controller **does not** return 5xx. Instead, the composite provider serves the static AU fallback with **`source=fallback`**, preserving the Phase 4 contract for clients. User cancellations (`HttpContext.RequestAborted`) are propagated as cancellation, never converted to a fallback. Maintenance is handled separately (see below).
+
+#### Maintenance mode
+
+`MAINTENANCE_MODE=true` short-circuits every **`/weather*`** request with **`503 Service Unavailable`** + **ProblemDetails** + **`Cache-Control: no-store`** **before** any provider runs. **`/health`** and **`/swagger`** stay reachable.
+
+```bash
+Weather__MaintenanceMode=true \
+  dotnet run --project src/GigglyGusts.Host/GigglyGusts.Host.csproj
+
+curl -sS -i "http://localhost:5025/weather?city=Sydney"   # 503 + ProblemDetails
+curl -sS -i "http://localhost:5025/health"                 # 200 (probes still work)
+```
+
+#### Configuration keys
+
+All keys live under the **`Weather`** section. They can be set via [`appsettings.*.json`](./src/GigglyGusts.Host/appsettings.json), env vars (using the `Weather__Foo__Bar` separator), or Terraform-passed Lambda env vars (see [`infra/compute.tf`](./infra/compute.tf)). **No secrets** in any of these.
+
+| Key | Env var | Default | Meaning |
+|-----|---------|---------|---------|
+| `Weather:UseOpenMeteo` | `Weather__UseOpenMeteo` | `false` | Kill-switch for the live provider; `false` keeps the API on the static AU table. |
+| `Weather:MaintenanceMode` | `Weather__MaintenanceMode` | `false` | `true` short-circuits weather routes to 503; evaluated **before** `UseOpenMeteo` (matches the truth table in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §10.2). |
+| `Weather:OpenMeteo:BaseUrl` | `Weather__OpenMeteo__BaseUrl` | `https://api.open-meteo.com` | Live provider base URL. Override for staging or offline mocks. |
+| `Weather:Http:AttemptTimeoutMs` | `Weather__Http__AttemptTimeoutMs` | `1500` | Per-attempt HTTP timeout (drives `HttpClient.Timeout`). |
+| `Weather:Http:MaxRetries` | `Weather__Http__MaxRetries` | `2` | Retries **after** the first attempt (total attempts = 1 + this). |
+| `Weather:Http:BackoffBaseMs` | `Weather__Http__BackoffBaseMs` | `100` | Backoff base for `base * 2^attempt`, then full jitter. |
+| `Weather:Http:BackoffMaxMs` | `Weather__Http__BackoffMaxMs` | `1000` | Hard cap on the backoff window. |
+| `Weather:Http:RetryOn429` | `Weather__Http__RetryOn429` | `false` | `true` enables a single retry on 429 honouring `Retry-After` (capped at `BackoffMaxMs`); `false` treats 429 as non-retryable. |
+
+**Retry classification:** transient (retryable) — connection errors, per-attempt `TaskCanceledException` (from `HttpClient.Timeout`), 5xx, **and** 429 when `RetryOn429=true`. Non-retryable — user cancellation (`RequestAborted`), 4xx (other than the documented 429 rule), 200 with malformed/incomplete JSON.
+
+**Circuit breaker — deferred.** A process-level circuit breaker (open / half-open / closed) around the live path is **not** implemented in Phase 6; the bounded retry budget + fallback already keeps single requests cheap. A breaker around the retry policy is reserved for a later phase per the architecture doc.
+
+**Runtime flag updates.** `Weather:UseOpenMeteo`, `Weather:MaintenanceMode`, and the retry knobs are all read via [`IOptionsMonitor`](https://learn.microsoft.com/dotnet/api/microsoft.extensions.options.ioptionsmonitor-1) per request through [`WeatherProviderRouter`](./src/GigglyGusts.Host/Weather/WeatherProviderRouter.cs) and [`MaintenanceModeMiddleware`](./src/GigglyGusts.Host/Middleware/MaintenanceModeMiddleware.cs). Within a single request the captured value is stable (no mid-request flips); new requests pick up the latest values without a process restart. The named `HttpClient` configuration (base URL + per-attempt timeout) is snapshotted when `IHttpClientFactory` builds the client, which is per-attempt, so attempt-timeout changes also take effect on the next request.
 
 ### Swagger / OpenAPI
 
@@ -115,7 +160,7 @@ dotnet test GigglyGusts.sln
 
 [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) runs on **push** and **pull_request** to **`main`**:
 
-- **`ci`:** **restore** → **`dotnet format --verify-no-changes`** → **build** → **test** (SDK from `global.json`). The job sets **`ASPNETCORE_ENVIRONMENT=Development`** and **`DOTNET_ENVIRONMENT=Development`** so CI matches the default local story.
+- **`ci`:** **restore** → **`dotnet format --verify-no-changes`** → **build** → **test** (SDK from `global.json`). The job sets **`ASPNETCORE_ENVIRONMENT=Development`** and **`DOTNET_ENVIRONMENT=Development`**, plus the Phase 6 defaults **`Weather__UseOpenMeteo=false`** and **`Weather__MaintenanceMode=false`** so the default test process never reaches Open-Meteo; live-path coverage runs against `HttpMessageHandler` fakes inside the test suite.
 - **`docker`:** runs **after `ci`**, builds [`Dockerfile`](./Dockerfile) with `docker/setup-buildx-action` + `docker/build-push-action` (cache via `type=gha`), tags the image with the commit SHA, then runs a quick smoke test that asserts **`/health`** and **`/weather?city=Sydney`** respond inside the container. **No registry push** on the default workflow.
 - **`terraform`:** **`terraform fmt -check -recursive`**, **`init -backend=false`**, **`validate`**, **`plan`** in **`infra/`** — **no `apply`** on the default pipeline. A **LocalStack** service runs in that job so **`terraform plan`** can target the AWS provider **without real `AWS_*` credentials**; the job sets **`TF_VAR_use_localstack=true`**, **`TF_VAR_localstack_endpoint`**, and **`TF_VAR_container_image`** (placeholder public Lambda base image URI). LocalStack services include **`ecr`** so the new `aws_ecr_repository` (Phase 5) plans cleanly.
 - **Token & concurrency:** workflow **`permissions`** are limited to **`contents: read`** (clone) and **`actions: write`** (NuGet **cache** save/restore). **`concurrency`** dedupes runs per ref and **`cancel-in-progress: true`** cancels an in-flight run when a newer commit is pushed to the same branch/PR.
@@ -139,12 +184,20 @@ Mode B is **not** wired into this repo's default workflow on purpose: a take-hom
 - **Application:** **`GET /weather?city={city}`** via **`ControllerBase`** + DI; **`IWeatherProvider`** with **`MockWeatherProvider`** only; **AU allowlist** and **ProblemDetails** on **400**; correlation id header + body field; unit + integration tests.
 - **Terraform:** Lambda execution role, basic execution policy attachment, log group, and **`aws_lambda_function`** with **`package_type = Image`**.
 
-## Phase 5 (this slice)
+## Phase 5 (completed)
 
-- **Container:** repo-root [`Dockerfile`](./Dockerfile) (multi-stage, ASP.NET 8 runtime + AWS Lambda Web Adapter), [`.dockerignore`](./.dockerignore) to keep the build context lean. Same `/health` and `/weather` surface inside the container.
-- **Terraform:** added **`aws_ecr_repository`** + lifecycle policy ([`infra/ecr.tf`](./infra/ecr.tf)); the existing `aws_lambda_function` already consumes **`var.container_image`** so `terraform plan` reacts to image-reference changes.
-- **CI:** new **`docker`** job builds the image and smoke-tests `/health` + `/weather` after `ci` passes; **`terraform`** job continues to plan against LocalStack (now including `ecr`). **No `terraform apply`** and **no ECR push** on the default workflow — see Mode A / Mode B above.
-- **Decision record:** packaging and compute choice tracked in [ADR 0001 — Lambda container from ECR (Accepted)](./docs/design/adr/0001-lambda-container-compute.md).
+- **Container:** repo-root [`Dockerfile`](./Dockerfile) (multi-stage, ASP.NET 8 runtime + AWS Lambda Web Adapter), [`.dockerignore`](./.dockerignore).
+- **Terraform:** **`aws_ecr_repository`** + lifecycle policy.
+- **CI:** **`docker`** job builds + smoke-tests after `ci`; default workflow does not push to ECR or `apply`.
+
+## Phase 6 (this slice)
+
+- **Live provider:** [`OpenMeteoWeatherProvider`](./src/GigglyGusts.Host/Weather/OpenMeteoWeatherProvider.cs) behind `IHttpClientFactory` named client `open-meteo`. Resilience is delegated to a **Polly v8 `ResiliencePipeline`** built per call from the current options — bounded retries, exponential backoff with built-in jitter, a `DelayGenerator` that honours `Retry-After` when 429-retry is on, and native `CancellationToken` propagation. Per-attempt timeout comes from `HttpClient.Timeout`.
+- **Fallback policy:** [`WeatherProviderRouter`](./src/GigglyGusts.Host/Weather/WeatherProviderRouter.cs) downgrades to **`source=fallback`** when the live pipeline exhausts retries; user cancellations propagate.
+- **Feature flags:** **`Weather:UseOpenMeteo`** picks live vs mock inside the router; **`Weather:MaintenanceMode`** short-circuits weather routes to **503** via [`MaintenanceModeMiddleware`](./src/GigglyGusts.Host/Middleware/MaintenanceModeMiddleware.cs) (evaluated first, beats `UseOpenMeteo`).
+- **Tests:** unit tests assert observable outcomes (attempt counts, mapping for happy / malformed / incomplete payloads, 429 rules, cancellation propagation) — the retry / backoff math itself is Polly's responsibility and isn't re-asserted. Integration tests cover live success, 5xx → retry → fallback, timeout → retry → fallback, garbage JSON → fallback, and maintenance mode (no outbound HTTP).
+- **Terraform:** Lambda environment variables for every new key, **`aws_lambda_function.publish = true`**, **`aws_lambda_alias "live"`**, and **`aws_lambda_provisioned_concurrency_config`** that activates when **`var.provisioned_concurrency_count > 0`** (default `0` — non-prod / take-home).
+- **CI:** `ci` job explicitly exports `Weather__UseOpenMeteo=false` and `Weather__MaintenanceMode=false` so tests never depend on Open-Meteo uptime.
 
 ## Docs and phased delivery
 

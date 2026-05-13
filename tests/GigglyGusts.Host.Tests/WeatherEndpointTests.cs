@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Xunit;
@@ -12,11 +11,6 @@ namespace GigglyGusts.Host.Tests;
 /// </summary>
 public sealed class WeatherEndpointTests : IClassFixture<WebApplicationFactory<Program>>
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-    };
-
     private readonly WebApplicationFactory<Program> _factory;
 
     public WeatherEndpointTests(WebApplicationFactory<Program> factory)
@@ -56,7 +50,7 @@ public sealed class WeatherEndpointTests : IClassFixture<WebApplicationFactory<P
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Contains("no-store", response.Headers.CacheControl?.ToString() ?? string.Empty, StringComparison.OrdinalIgnoreCase);
 
-        var problem = await response.Content.ReadFromJsonAsync<ProblemDetailsDto>(JsonOptions);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetailsDto>();
         Assert.NotNull(problem);
         Assert.Equal(400, problem!.Status);
         Assert.False(string.IsNullOrEmpty(problem.CorrelationId));

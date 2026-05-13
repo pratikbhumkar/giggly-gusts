@@ -67,3 +67,13 @@ output "ecr_repository_arn" {
   description = "ECR repository ARN (useful for IAM policy scoping in later phases)."
   value       = aws_ecr_repository.api.arn
 }
+
+output "lambda_alias_arn" {
+  description = "ARN of the stable Lambda alias (API Gateway should integrate against this)."
+  value       = aws_lambda_alias.live.arn
+}
+
+output "lambda_function_version" {
+  description = "Published version of the Lambda function targeted by the alias."
+  value       = aws_lambda_function.api.version
+}

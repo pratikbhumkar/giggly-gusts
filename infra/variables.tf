@@ -45,3 +45,55 @@ variable "localstack_endpoint" {
   type        = string
   default     = "http://127.0.0.1:4566"
 }
+
+variable "lambda_alias_name" {
+  description = "Stable Lambda alias that API Gateway / clients should target (publishes a version on every change)."
+  type        = string
+  default     = "live"
+}
+
+variable "provisioned_concurrency_count" {
+  description = "Provisioned concurrency on the alias. 0 disables. Real environments typically use 3 (see docs/ARCHITECTURE.md §4.2)."
+  type        = number
+  default     = 0
+  validation {
+    condition     = var.provisioned_concurrency_count >= 0
+    error_message = "provisioned_concurrency_count must be >= 0."
+  }
+}
+
+variable "use_open_meteo" {
+  description = "Phase 6 feature flag passed to the Lambda environment: enables the live Open-Meteo path with fallback."
+  type        = bool
+  default     = false
+}
+
+variable "maintenance_mode" {
+  description = "Phase 6 feature flag passed to the Lambda environment: when true, the API short-circuits weather routes to 503."
+  type        = bool
+  default     = false
+}
+
+variable "weather_http" {
+  description = "Per-attempt timeout, retry count, and backoff bounds for the Open-Meteo client. Mirrors WeatherOptions.Http in the app."
+  type = object({
+    attempt_timeout_ms = number
+    max_retries        = number
+    backoff_base_ms    = number
+    backoff_max_ms     = number
+    retry_on_429       = bool
+  })
+  default = {
+    attempt_timeout_ms = 1500
+    max_retries        = 2
+    backoff_base_ms    = 100
+    backoff_max_ms     = 1000
+    retry_on_429       = false
+  }
+}
+
+variable "open_meteo_base_url" {
+  description = "Base URL for the Open-Meteo client (override only for staging / offline test mocks)."
+  type        = string
+  default     = "https://api.open-meteo.com"
+}

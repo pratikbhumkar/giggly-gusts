@@ -9,7 +9,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<HealthDisplayOptions>(
     builder.Configuration.GetSection(HealthDisplayOptions.SectionName));
 builder.Services.AddControllers();
-builder.Services.AddSingleton<IWeatherProvider, MockWeatherProvider>();
+builder.Services.AddWeatherPipeline(builder.Configuration);
 builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc(
@@ -18,12 +18,13 @@ builder.Services.AddSwaggerGen(options =>
         {
             Title = "GigglyGusts API",
             Version = "v1",
-            Description = "Weather-style HTTP API. Mock weather only in this phase (no Open-Meteo).",
+            Description = "Weather-style HTTP API. Live path: Open-Meteo behind USE_OPEN_METEO (with fallback). MAINTENANCE_MODE short-circuits to 503.",
         });
 });
 var app = builder.Build();
 
 app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseWeatherMaintenanceMode();
 
 app.UseSwagger();
 app.UseSwaggerUI(c =>

@@ -25,7 +25,8 @@ public sealed class WeatherController : ControllerBase
     public async Task<IActionResult> GetAsync([FromQuery] string? city, CancellationToken cancellationToken)
     {
         var correlationId = GetCorrelationId();
-        var normalized = CityNormalizer.NormalizeForLookup(city);
+        // Trim and upper-invariant fold so the allowlist match is whitespace- and case-insensitive.
+        var normalized = (city ?? string.Empty).Trim().ToUpperInvariant();
 
         if (string.IsNullOrEmpty(normalized))
         {
@@ -58,7 +59,7 @@ public sealed class WeatherController : ControllerBase
         };
 
         _logger.LogInformation(
-            "Weather mock success. City={City} Source={Source} CorrelationId={CorrelationId}",
+            "Weather lookup success. City={City} Source={Source} CorrelationId={CorrelationId}",
             lookup.CityDisplay,
             lookup.Source,
             correlationId);
