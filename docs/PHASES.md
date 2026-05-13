@@ -1,254 +1,216 @@
 # Phased build plan
 
-Build in **thin vertical slices**. Finish each phase before starting the next unless you explicitly split work across people. Cross-check details with [ARCHITECTURE.md](./ARCHITECTURE.md) (resilience, flags, correlation id, CDN, multi-env).
+Build in **thin vertical slices**. **Phase 1 is already done** (heartbeat only, no Terraform). **From Phase 2 onward**, **application and Terraform evolve together** so you can demo **iterative DevOps**: same PR tightens app **and** infra; CI runs **.NET + Terraform** (no `apply` in the default story unless you opt in). Cross-check [ARCHITECTURE.md](./ARCHITECTURE.md) for the target shape (Lambda, API Gateway, CloudFront, resilience, etc.).
+
+**Principle:** **Phase 2+** each phase ends with **(1)** something new in the **app** (or unchanged if that phase is infra-heavy), **(2)** something new or stricter in **`infra/`**, and **(3)** **CI** still green — **plan-only** on AWS until you explicitly add credentials for `apply`.
 
 ---
 
-## Phase 1 — Heartbeat only
+## Phase 1 — Heartbeat only (**already committed**)
 
-**Goal:** Prove the ASP.NET Core host starts and responds over HTTP — **nothing else**.
+**Goal:** Prove the ASP.NET Core host starts and responds over HTTP — **nothing else**. This phase is **done** in your repo baseline; do not retroactively add Terraform here.
 
-**Depends on:** repo + SDK installed locally.
+### Application
 
-**Deliverables**
+- Minimal host; **`GET /health`** or **`GET /`** → **200**, tiny body.
+- Root **README**: `dotnet run`, `curl`.
 
-- Minimal web host (Minimal APIs or controllers — pick one and keep it).
-- **`GET /health`** or **`GET /`** returning **HTTP 200** and a tiny payload (JSON like `{ "status": "ok" }` or plain `Healthy`).
-- **`README.md`** (repo root): how to **`dotnet run`** and **`curl`** the heartbeat.
+### IaC / CI
 
-**Out of scope**
+- **Out of scope** — no **`infra/`**, no GitHub Actions for this slice.
 
-- Weather, Open-Meteo, Terraform, AWS, auth, CloudFront, correlation id, feature flags.
+### Done when
 
-**Done when**
+- [x] `dotnet run` serves the heartbeat; `curl -i` shows **200** and expected body.
 
-- [ ] `dotnet run` from repo root (or documented project path) serves the heartbeat.
-- [ ] `curl -i` shows **200** and expected body.
-- [ ] You can explain the project entrypoint in one sentence (interview-ready).
+### Tips
 
-**Tips**
-
-- Keep **Program.cs** (or equivalent) small; avoid pulling in every NuGet “for later.”
-- If you already know you will deploy to Lambda, still **defer** Lambda packaging until Phase 7 — Phase 1 is host-only.
+- Treat Phase 1 as **frozen history**; all **DevOps iteration** (Terraform + CI) starts in **Phase 2**.
 
 ---
 
-## Phase 2 — Basic CI (GitHub Actions)
+## Phase 2 — Terraform skeleton + CI: .NET + Terraform (still no `apply`)
 
-**Goal:** **Every PR** runs **build**, **tests**, and **C# code lint/format** checks — no AWS, no Terraform.
+**Goal:** Land **`infra/`** and **GitHub Actions** so **every PR** runs **application** quality gates **and** **Terraform** gates — first step of **iterative infra** on top of the committed heartbeat.
 
-**Depends on:** Phase 1 complete (something to build and test).
+**Depends on:** Phase 1 (heartbeat already in `main` or your trunk).
 
-**Deliverables**
+### Application (CI)
 
-- `.github/workflows/ci.yml` (or split files later) triggered on **`pull_request`** and **`push`** to **`main`** (adjust branches to your branching model).
-- Job steps: checkout → **setup-dotnet** (pin SDK version to match `global.json` / repo) → **restore** → **`dotnet format --verify-no-changes`** → **build** → **test**.
-  - **`dotnet format`** enforces whitespace/style against **`.editorconfig`** (commit one at repo root; use the .NET defaults if you have no custom rules yet).
-  - Run **format after `restore`** so analyzers and workspace load correctly; use **`--verbosity diagnostic`** only when debugging CI.
-- At least **one** non-empty test (e.g. asserts heartbeat route exists or a trivial unit test) so **`dotnet test`** is meaningful.
-- **Optional:** `actions/cache` for NuGet (`~/.nuget/packages`).
-- **Optional (stricter):** `dotnet build --warnaserror` or `/p:TreatWarningsAsErrors=true` in CI only — add when the codebase is clean enough that noise does not block every PR.
+- Workflow: checkout → setup-dotnet (pinned) → restore → **`dotnet format --verify-no-changes`** → build → test.
+- **`.editorconfig`**, ≥1 real test.
+- Root README: **CI** section (pinned SDK, how to run format locally).
 
-**Done when**
+### IaC (new this phase)
 
-- [ ] CI passes on a PR touching only app code.
-- [ ] **Misformatted or style-violating** code fails CI (verify once with a deliberate bad formatting commit on a throwaway branch).
-- [ ] Failing test fails CI (verify once with a throwaway branch).
-- [ ] No secrets required for the workflow.
+- Create **`infra/`** (or `terraform/`) with: **`versions.tf`** / **`terraform` block**, **`variables.tf`** (e.g. `project_name`, `environment`), **`outputs.tf`** (surface a value from vars).
+- **Optional:** `providers.tf` with **`aws`** provider **only if** **`terraform init -backend=false` + `validate` + `plan`** work **without** credentials (empty config is fine; **avoid** resources that force credential checks during `plan` until you are ready — use **no resources** first if `plan` errors without keys).
+- README: **`terraform init -backend=false`**, **`terraform validate`**, **`terraform plan`** from `infra/` (same doc as CI section).
 
-**Tips**
+### IaC (CI)
 
-- Pin **.NET version** explicitly in the workflow to avoid “works on my machine” drift.
-- If your SDK does not include **`dotnet format`**, add **`.config/dotnet-tools.json`** and run **`dotnet tool restore`** then **`dotnet tool run dotnet-format`** (see current Microsoft docs for the exact package name and args).
-- **Roslyn analyzers** / `EnableNETAnalyzers` can stay at default severity in Phase 2; ratchet **warn-as-error** in a later phase if desired.
+- Same or sibling workflow job: setup Terraform (pin version) → **`terraform fmt -check`** in `infra/` → **`init -backend=false`** → **`validate`** → **`plan`** (working directory `infra/`).
+- **Optional:** cache Terraform plugin dir.
 
----
+### Done when
 
-## Phase 3 — Environment awareness (optional but small)
+- [ ] PR + push to **`main`** run **both** jobs; all green without secrets.
+- [ ] From `infra/` locally: **`init -backend=false`**, **`validate`**, **`plan`** succeed (no backend, no secrets).
+- [ ] Bad C# formatting fails CI; bad HCL `fmt` fails CI; failing test fails CI (prove on throwaway branches).
 
-**Goal:** Same binary, **different config** per environment — still heartbeat-sized.
+### Tips
 
-**Depends on:** Phase 2 (so CI exercises env in a repeatable way).
-
-**Deliverables**
-
-- `appsettings.json` + **`appsettings.Development.json`** / **`appsettings.Production.json`** (or only Development if that is enough).
-- Heartbeat or logs expose **`IHostEnvironment.EnvironmentName`** (or safe subset) — **no secrets** in response.
-- Document in **README** how CI sets **`DOTNET_ENVIRONMENT`** / **`ASPNETCORE_ENVIRONMENT`** if you set it in the workflow.
-
-**Done when**
-
-- [ ] Running locally with `Development` vs `Production` shows a **visible, intentional** difference (response field or log line).
-- [ ] CI runs with **`Development`** (typical) and still passes.
-
-**Tips**
-
-- Skip this phase entirely if it slows you down; merge into Phase 1–2 only if you need it for demos.
+- If **`plan`** insists on AWS creds because of a provider default, **defer** the AWS provider block to **Phase 3** and keep Phase 2 to **pure config** (`terraform` + vars + outputs only).
+- Use **`paths` filters** only if you split workflows later; for a small repo, **one workflow** with two jobs (`dotnet`, `terraform`) is easy to narrate in an interview.
 
 ---
 
-## Phase 4 — `GET /weather` (mock)
+## Phase 3 — Environment awareness + first AWS-shaped infra (optional app; small IaC)
 
-**Goal:** Lock the **HTTP contract** and **validation** without network flakiness.
+**Goal:** Show **config split** (app) and **first real or “almost real”** infra increment — still **`plan` only** in CI.
 
-**Depends on:** Phase 1–2; Phase 3 optional.
+**Depends on:** Phase 2.
 
-**Deliverables**
+### Application (optional)
 
-- **`GET /weather?city={city}`** returning JSON aligned with architecture: at minimum **`city`**, **`tempC`**, **`condition`**, and any fields you already committed to (e.g. **`source`**, **`correlationId`** — if not yet, add them in Phase 8+ or here if stable).
-- **AU-only** rules as per architecture (allowlist or validation — document which).
-- **ProblemDetails** or consistent **400** body for bad input; **`Cache-Control: no-store`** on errors if you set headers this early.
-- **Unit tests** on the service or mapper that builds the response (happy path + invalid city + at least one edge case you care about).
+- `appsettings.*.json`; heartbeat echoes **environment** name or similar (no secrets).
 
-**Out of scope**
+### IaC increment (pick one track)
 
-- Open-Meteo, retries, circuit breaker, Terraform changes beyond “app still builds.”
+- **Track A — no creds yet:** add **modules** layout (`infra/modules/...`) with **no** new `apply`-time dependencies; more `outputs`, `locals`, naming conventions.
+- **Track B — first AWS resource:** e.g. **`aws_cloudwatch_log_group`** or **`random_id`** / **`tls_private_key`** only if your `plan` works without keys — otherwise wait until you have a **mock** or **disabled** provider pattern.
 
-**Done when**
+### CI
 
-- [ ] Mock response matches the documented contract.
-- [ ] **`dotnet test`** green in CI.
-- [ ] You can demo **`curl`** `/weather?city=Melbourne` without any external API.
+- Unchanged gates; both jobs must stay green.
 
-**Tips**
+### Done when
 
-- Put mock logic behind **`IWeatherProvider`** (or similar) so Phase 6 swaps implementation without rewriting the endpoint.
-- Keep **normalization** (`Trim`, case rules) consistent — you will reuse in Phase 6.
+- [ ] README explains what changed this phase for **app** and **infra**.
+- [ ] `terraform plan` in CI still passes with **no** `apply`.
 
 ---
 
-## Phase 5 — Terraform in CI (no apply required)
+## Phase 4 — Mock `GET /weather` + infra toward compute
 
-**Goal:** Infrastructure is **versioned**, **formatted**, **valid**, and **planned** like application code — **no AWS credentials** in the default pipeline.
+**Goal:** Lock **weather contract** (mock) and move Terraform **toward** Lambda/API (stubs, **container image** **`variable`** — **full wiring can be incremental**).
 
-**Depends on:** Phase 2 (CI exists); app code from Phase 4 can evolve in parallel but merge conflicts are easier if `infra/` lands when the repo is already green.
+**Depends on:** Phase 2; Phase 3 optional.
 
-**Deliverables**
+### Application
 
-- `infra/` or `terraform/` with at least: **variables**, **outputs**, and skeleton resources (Lambda + API Gateway stub is enough to start; align with [ARCHITECTURE.md](./ARCHITECTURE.md)).
-- CI job (same or new workflow): install Terraform → **`terraform fmt -check`** → **`init -backend=false`** → **`validate`** → **`plan`** (no `apply`).
-- Document in **README**: how to run the same commands locally without keys.
+- **`GET /weather?city=...`** mock JSON; AU rules; tests (service / handler).
 
-**Done when**
+### IaC increment
 
-- [ ] PR comments or logs show a **non-empty plan** or a deliberate “no changes” plan after first merge.
-- [ ] `fmt -check` fails CI when someone misformats HCL (verify once on a throwaway commit).
-- [ ] Repo remains **clone-and-plan** without AWS access.
+- Add **IAM role** skeleton, **`aws_lambda_function`** placeholder (container **`image_uri`** **`variable`** or stub), **`aws_cloudwatch_log_group`** if not already — **each PR can add one logical slice** as long as **`plan`** stays valid without `apply`.
+- Document in README or comment: **“not deployed yet — plan only.”**
 
-**Tips**
+### CI
 
-- Start with **fewer resources** and expand; a huge first PR is harder to review.
-- Match **resource names** to `name_prefix` / `environment` variables early — multi-env in Phase 8+ is easier.
+- Still **no** `apply`. If **`plan`** needs a concrete image reference, pass **`TF_VAR_...`** from CI (see **Phase 5** for **Docker / ECR**).
 
----
+### Done when
 
-## Phase 6 — Open-Meteo (live weather data)
-
-**Goal:** Same route as Phase 4, but **live path** calls **Open-Meteo** and maps into the **same** success shape; failures degrade predictably.
-
-**Depends on:** Phase 4 (contract + tests); Phase 5 can proceed in parallel but merge **Open-Meteo after** mock is stable to avoid debugging two unknowns.
-
-**Deliverables**
-
-- **`HttpClient`** (or `IHttpClientFactory` named client) with **base URL** from configuration; **HTTPS** only.
-- **Geocoding + forecast** (or single Open-Meteo API flow you chose in architecture): parse JSON, map to **`tempC`** / **`condition`**; handle **malformed** payload.
-- **Resilience (minimum):** per-request **timeout**; **retries with exponential backoff + jitter** on transient errors only; **circuit breaker** optional in this phase if time is tight — but **fallback** when live path gives up is strongly recommended.
-- **Fallback:** AU monthly typical data (or documented mock) with **`source: fallback`** (or equivalent) when Open-Meteo fails or circuit is open.
-- **Tests:** **`HttpMessageHandler`** fakes for **200 success**, **timeout**, **502/503**, **garbage JSON**; assert **`source`**, status codes, and no unhandled exceptions.
-
-**Out of scope (Phase 8+)**
-
-- CloudFront, AU geo at edge, full OTel, blue/green, `terraform apply`, multi-account OIDC.
-
-**Done when**
-
-- [ ] Local run: **`source: live`** against a real city when Open-Meteo is reachable.
-- [ ] Local run (or test): **`source: fallback`** when handler simulates outage.
-- [ ] CI green **without** depending on Open-Meteo uptime (all network in tests faked or strictly optional behind a flag not used in CI).
-
-**Tips**
-
-- Log **`correlationId`** / attempt count **before** you add CloudWatch metric filters (Phase 8+).
-- If CI must stay hermetic, use **`USE_OPEN_METEO=false`** in test configuration only — document the split.
+- [ ] Mock weather + tests green.
+- [ ] `terraform plan` shows **expected next resources** (even if “will be created” is deferred across PRs).
 
 ---
 
-## Phase 7 — Infra “deploy” path (plan-only by default)
+## Phase 5 — Docker image, ECR, Lambda (container) + Terraform `plan` (still no `apply` by default)
 
-**Goal:** CI produces an **artifact** and Terraform **plan** shows how that artifact would land in AWS — **real `apply` optional**.
+**Goal:** CI **builds a runnable container image** of the API, **pushes it to Amazon ECR** when you allow AWS credentials in the pipeline, and **Terraform plans** a **Lambda deployed as a container image** (plus wiring toward **API Gateway**) — **demo “build once, plan many”** on the **Docker → ECR → Lambda** path.
 
-**Depends on:** Phase 5–6 (Lambda code shape stable enough to package); strictly you can package a heartbeat-only app in Phase 7 and add weather in Phase 6 in parallel **if** your team coordinates — linear order above is safer.
+**Depends on:** Phase 4 (or parallelize only if you can keep both green).
 
-**Deliverables**
+### Application
 
-- **`dotnet publish`** for **Lambda** RID / layout your Terraform `aws_lambda_function` expects (zip path wired via variable or CI artifact upload).
-- CI: upload **artifact** → Terraform job consumes it → **`terraform plan`** with **`-backend=false`** (or read-only backend) so plan runs in PRs **without** secrets.
-- **README:** exact command sequence for maintainers; what is **not** run in CI (`apply`).
+- **`Dockerfile`** (multi-stage is fine): **build** and **run** the ASP.NET Core app inside the image; document **`docker build`** / **`docker run`** locally (ports, `/health`).
+- Keep **`dotnet build` / `dotnet test`** in CI on the solution — the image build **proves** the same code ships in the container Lambda will run.
 
-**Optional stretch (explicit opt-in)**
+### IaC increment
 
-- GitHub **Environment** `dev`, AWS credentials, **`terraform apply`**, smoke **`curl`** on **`/health`** then **`/weather`**.
+- **`aws_ecr_repository`** (and sensible **lifecycle** / **image tag** hygiene if you add them).
+- **`aws_lambda_function`** with **`package_type = "Image"`** and **`image_uri`** (or equivalent) coming from a **Terraform variable** (e.g. digest or `repo_url:tag` from CI via **`TF_VAR_...`**).
+- **IAM** for Lambda execution role (logs, minimal outbound HTTPS for later Open-Meteo).
+- Add **API Gateway HTTP API** + **Lambda integration** **when ready** — can be **this phase or early Phase 6**; keep **one PR = one narrative slice** for demos.
 
-**Done when (default)**
+### CI
 
-- [ ] CI publishes **artifact** and completes **`terraform plan`** successfully on `main` / PRs.
-- [ ] Plan output is readable (resource names, counts, no secrets in stdout).
-- [ ] Repo still **does not require** AWS keys for contributors running build/test/plan locally.
+- Typical order: **restore / format / build / test (.NET)** → **`docker build`** (tag with **`GITHUB_SHA`** or similar) → **Terraform** **`fmt` / `validate` / `plan`** with **`TF_VAR_container_image`** (or your variable name) set to the image reference Terraform should plan against.
+- **Push to ECR:** requires **AWS auth** in that job (OIDC or narrow IAM). For **plan-only** PRs, you may **skip push** and still pass a **stable placeholder** image URI into **`plan`** so CI stays green **without** secrets — **document** which mode you use; real **`apply`** always uses an image that **exists** in ECR.
 
-**Done when (optional apply path)**
+### Done when
 
-- [ ] One environment returns **200** from deployed **`/health`** and **`/weather`** (mock or live per config).
+- [ ] **`docker build`** succeeds in CI on **`main`** / PRs.
+- [ ] **`terraform plan`** shows the **Lambda (Image)** + ECR-related changes you expect, and **changes** when the **passed-in image reference** changes (prove with two commits).
+- [ ] Default story: **no** required AWS secrets **or** a clearly documented **optional** job that pushes + plans with real URIs.
 
-**Tips**
+### Optional
 
-- First successful **`apply`** should target **smallest** resource set (Lambda + HTTP API + role + log group) before CloudFront.
-- After optional **`apply`**, add **smoke** step only if URL is stable and non-secret.
+- **`terraform apply`** + smoke **`curl`** on **`/health`** (and **`/weather`** when it exists) — **explicit opt-in** when credentials and ECR push are enabled.
 
 ---
 
-## Phase 8+ — Iterative product and hardening
+## Phase 6 — Open-Meteo (live path) + keep infra growing
 
-**Goal:** Close gaps to **architecture doc** and production habits — **small PRs**, each keeping CI green.
+**Goal:** Live weather path + **continue** small infra PRs (alias, provisioned concurrency, stage variables — whatever your architecture doc lists next).
 
-**Depends on:** Phases 1–7 baseline; order below is a **menu**, not a strict sequence.
+**Depends on:** Phase 4 mock stable.
 
-**Typical work items**
+### Application
 
-| Area | Examples |
-|------|-----------|
-| **Open-Meteo path** | Circuit breaker tuning, structured logs per attempt, metric filters on log lines |
-| **API surface** | **`correlationId`** + **`X-Correlation-Id`**, ProblemDetails consistency, `Cache-Control` |
-| **Flags** | **`USE_OPEN_METEO`**, **`MAINTENANCE_MODE`** wired from env / Terraform |
-| **Edge** | CloudFront, AU geo restriction, CDN vs `correlationId` body cache decision |
-| **Multi-env** | `env/dev.tfvars`, `env/prod.tfvars`, separate state keys |
-| **Deploy** | Blue/green alias weights or CodeDeploy; optional `apply` to staging |
-| **Observability** | Dashboards, alarms, SNS; OTel per architecture §11 |
-| **Governance** | **ADRs** in `docs/design/adr/` for major choices |
+- Open-Meteo client; timeouts; retries + jitter; fallback; faked tests.
+
+### IaC increment (examples)
+
+- **`aws_lambda_alias`**, **`aws_lambda_provisioned_concurrency_config`**, API stage **`throttle`** — **one or two per PR** is fine for a “iterative improvement” story.
+
+### CI
+
+- Same .NET + Terraform gates; **no** `apply` unless opted in.
+
+---
+
+## Phase 7 — Plan remains default; optional `apply` + smoke
+
+**Goal:** Same as architecture **Phase 7** narrative: default remains **plan**; **apply** + smoke only with GitHub Environment + credentials.
+
+**Depends on:** Phase 5–6 maturity.
+
+### Done when
+
+- [ ] Documented path for **`apply`** + smoke; **or** explicit “we stay plan-only for take-home.”
+
+---
+
+## Phase 8+ — Edge, observability, blue/green, multi-env, ADRs
+
+**Goal:** CloudFront, AU geo, correlation id polish, metric filters / OTel, **`env/*.tfvars`**, blue/green, ADRs — **each** as small PRs; **Terraform and app keep moving together**.
 
 **Rule**
 
-- Each PR: **`dotnet format --verify-no-changes`**, **build**, and **test** green (Phase 2); **`terraform fmt -check` / `validate` / `plan`** green where infra touched (Phase 5+).
-- **`terraform apply`**: only from protected workflow + credentials you control.
+- Each PR: **.NET** (`dotnet format`, build, test) + **Terraform** (`fmt`, `validate`, `plan`) green.
+- **`terraform apply`**: only protected workflow + credentials **you** control.
 
 ---
 
 ## Summary
 
-| Phase | Focus |
-|-------|--------|
-| **1** | Heartbeat only |
-| **2** | GitHub Actions: **format/lint**, build, test |
-| **3** | Environment config (small, optional) |
-| **4** | Mock `GET /weather` + tests |
-| **5** | Terraform fmt / validate / plan in CI |
-| **6** | Open-Meteo live path + timeouts / retries / fallback + faked tests |
-| **7** | Package artifact + **`terraform plan`** (optional **`apply`** + smoke) |
-| **8+** | Edge, flags, correlation id polish, multi-env, blue/green, OTel/metrics, ADRs |
+| Phase | Application | IaC (evolving) | CI |
+|-------|-------------|----------------|-----|
+| **1** | Heartbeat only (**committed**) | — | — |
+| **2** | (same + format/test in CI) | **`infra/`** skeleton; local + CI **`fmt` / `validate` / `plan`** | **.NET** + **Terraform**, no `apply` |
+| **3** | Optional env echo | First modules / first AWS-ish resource if `plan` allows | Both green |
+| **4** | Mock `/weather` | Toward Lambda / IAM / logs | Both green |
+| **5** | Dockerfile + **Docker build** in CI | **ECR** + **Lambda (`package_type = Image`)** in Terraform; **`plan`** uses image ref; API GW when ready | Both green |
+| **6** | Open-Meteo + resilience | Alias, PC, throttles, … incremental | Both green |
+| **7** | (stabilize) | Optional **`apply`** + smoke | Documented |
+| **8+** | Hardening | CloudFront, multi-env, blue/green, alarms | Both green |
 
-**Sequencing reminders**
+**Sequencing**
 
-- Keep **Phase 4 mock before Phase 6 live** unless you want to debug contract + HTTP client together.
-- **Phase 7** can start when packaging is clear; **live Open-Meteo** does not require **Phase 7** to be finished first.
-- If you add **real `apply`**, prove **`/health`** in the cloud **before** layering CloudFront + geo on the same URL.
+- **Mock weather before Open-Meteo** (Phase 4 before Phase 6) unless you accept joint debugging.
+- **Terraform starts in Phase 2** (after the committed heartbeat) and **grows with** the app so interviewers see **continuous** DevOps iteration.
 
-Adjust numbering if you merge optional phases; update this file when you change exit criteria.
+Update this file when you change phase boundaries or add demo-specific steps.

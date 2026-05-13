@@ -1,52 +1,39 @@
 # giggly-gusts
 
-HTTP API service for availability checks. Run it locally to confirm the host is up; clients use the health endpoint below.
+ASP.NET Core host for a **weather-style API** take-home: **thin vertical slices** for app and (from Phase 2 onward) **Terraform**, with **CI** as the safety net. Full architecture and delivery order live under **[`docs/`](./docs/README.md)**.
 
-## Prerequisites
+## Requirements
 
-Install the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0). The application targets `net8.0` (`src/GigglyGusts.Host`).
+- [.NET SDK 8](https://dotnet.microsoft.com/download) matching [`global.json`](./global.json) (currently **8.0.100**, roll-forward **latestPatch**).
 
-## Build
+## Run locally
 
-From the repository root:
-
-```bash
-dotnet build src/GigglyGusts.Host/GigglyGusts.Host.csproj
-```
-
-A successful build produces the host under `src/GigglyGusts.Host/bin/Debug/net8.0/` (or `Release` if you pass `-c Release`).
-
-## Run (local)
+From the repo root:
 
 ```bash
-cd src/GigglyGusts.Host
-dotnet run
+dotnet run --project src/GigglyGusts.Host/GigglyGusts.Host.csproj
 ```
 
-By default the **http** launch profile serves HTTP at **http://localhost:5025**. If you use another profile or edit `Properties/launchSettings.json`, use the URLs shown when the app starts.
-
-## Using the API
-
-### Health
-
-| Item | Value |
-|------|--------|
-| Method | `GET` |
-| Path | `/health` |
-| Success | `200 OK` |
-| Body | JSON: `{"status":"ok"}` |
-| Content-Type | `application/json; charset=utf-8` |
-
-**Example**
+Then (default **http** profile uses port **5025** — see [`launchSettings.json`](./src/GigglyGusts.Host/Properties/launchSettings.json)):
 
 ```bash
-curl -i http://localhost:5025/health
+curl -sS -i http://localhost:5025/health
 ```
 
-You should see `HTTP/1.1 200` (or `HTTP/1.1 200 OK`) and a response body of `{"status":"ok"}`.
+## Tests
 
-## Notes
+```bash
+dotnet test GigglyGusts.sln
+```
 
-- **Base URL:** For local development, use the host and port printed at startup (default HTTP base is `http://localhost:5025`).
-- **HTTPS:** The **https** profile in `Properties/launchSettings.json` uses different ports (`https://localhost:7110` and HTTP on `5025` in the template). Use the URL that matches how you started the app.
-- **Configuration:** Optional settings live in `appsettings.json` and `appsettings.Development.json` next to the host project; no secrets should be committed to the repository.
+## CI
+
+[`.github/workflows/ci.yml`](./.github/workflows/ci.yml) runs on **push** and **pull_request** to **`main`**: **restore** → **`dotnet format --verify-no-changes`** → **build** → **test** (SDK pinned via `global.json`).
+
+## Docs and phased delivery
+
+| Resource | Purpose |
+|----------|---------|
+| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | Target AWS shape, resilience, observability, environments. |
+| [`docs/PHASES.md`](./docs/PHASES.md) | **Phased plan:** **Phase 1** — heartbeat only (this repo’s committed baseline). **Phase 2+** — add **`infra/`**, **`terraform fmt` / `validate` / `plan`** in CI alongside the app, then mock API, **Docker → ECR → Lambda (container)** in **Phase 5**, Open-Meteo, optional **`apply`**, hardening. |
+| [`docs/README.md`](./docs/README.md) | Index of diagrams, design notes, ADR folder. |
