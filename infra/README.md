@@ -2,6 +2,8 @@
 
 No cloud providers are configured yet; configuration uses **variables**, **locals**, and **outputs** only so `fmt`, `validate`, and `plan` run in CI **without AWS credentials**.
 
+**Terraform CLI version:** GitHub Actions pins **Terraform 1.10.5** (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) `hashicorp/setup-terraform`). For local runs that should match CI (fmt drift, provider resolution), install the same version — e.g. **`tfenv use 1.10.5`**, **`mise install terraform@1.10.5`**, or the official HashiCorp release — then run the commands below from **`infra/`**.
+
 Layout:
 
 - **`main.tf`** — wires the **`modules/naming`** child module (variables, locals, outputs only; no `resource` blocks).

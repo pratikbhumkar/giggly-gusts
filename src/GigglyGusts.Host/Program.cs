@@ -13,7 +13,7 @@ app.MapGet(
     {
         var opts = healthOptions.Value;
         DiagnosticsPayload? diagnostics = opts.IncludeDiagnostics
-            ? new DiagnosticsPayload("non-production")
+            ? new DiagnosticsPayload(env.EnvironmentName)
             : null;
 
         return Results.Json(new HealthResponse("ok", env.EnvironmentName, diagnostics));

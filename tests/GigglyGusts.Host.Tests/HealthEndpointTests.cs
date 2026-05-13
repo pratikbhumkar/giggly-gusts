@@ -20,7 +20,7 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
         _factory = factory;
     }
 
-    private static JsonSerializerOptions JsonOptions => new()
+    private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
     };
@@ -39,7 +39,7 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Equal("ok", payload.Status);
         Assert.Equal("Development", payload.Environment);
         Assert.NotNull(payload.Diagnostics);
-        Assert.Equal("non-production", payload.Diagnostics.Profile);
+        Assert.Equal("Development", payload.Diagnostics.HostEnvironment);
     }
 
     [Fact]
@@ -73,6 +73,6 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
 
     private sealed class DiagnosticsApiDto
     {
-        public string Profile { get; set; } = string.Empty;
+        public string HostEnvironment { get; set; } = string.Empty;
     }
 }

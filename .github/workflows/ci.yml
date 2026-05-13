@@ -6,6 +6,15 @@ on:
   push:
     branches: [main]
 
+# Minimal GITHUB_TOKEN: clone repo + allow actions/cache to restore/save keys.
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci:
     runs-on: ubuntu-latest

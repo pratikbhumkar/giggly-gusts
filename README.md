@@ -35,6 +35,8 @@ ASPNETCORE_ENVIRONMENT=Production DOTNET_ENVIRONMENT=Production \
 
 `GET /health` should report **`"environment":"Production"`** and **omit** **`diagnostics`**.
 
+**`/health` response policy:** The top-level **`environment`** field (ASP.NET Core host environment name) is **always returned by design** for every environment — it is not a secret and helps operators and probes confirm which profile is active. Only the nested **`diagnostics`** object is gated by **`Health:IncludeDiagnostics`** (on in Development by default, off in Production).
+
 Base [`appsettings.json`](./src/GigglyGusts.Host/appsettings.json) holds shared defaults; environment files override **logging** and **health** display only — **no secrets** in any file.
 
 ## Tests
@@ -49,6 +51,7 @@ dotnet test GigglyGusts.sln
 
 - **`ci`:** **restore** → **`dotnet format --verify-no-changes`** → **build** → **test** (SDK from `global.json`). The job sets **`ASPNETCORE_ENVIRONMENT=Development`** and **`DOTNET_ENVIRONMENT=Development`** so CI matches the default local story.
 - **`terraform`:** **`terraform fmt -check -recursive`**, **`init -backend=false`**, **`validate`**, **`plan`** in **`infra/`** — no **apply**, no required **AWS** / **OIDC** secrets.
+- **Token & concurrency:** workflow **`permissions`** are limited to **`contents: read`** (clone) and **`actions: write`** (NuGet **cache** save/restore). **`concurrency`** dedupes runs per ref and **`cancel-in-progress: true`** cancels an in-flight run when a newer commit is pushed to the same branch/PR.
 
 ## Phase 3 (this slice)
 
