@@ -24,7 +24,7 @@ Living document for the DevOps take-home: **C# API**, **AWS (Terraform)**, **CI/
 Viewer
   → CloudFront (AU geo restriction, CDN cache)
   → API Gateway (throttling; optional REST stage cache — see §7.3)
-  → Lambda .NET 8 on alias `live` (provisioned concurrency = 3, in-process cache)
+  → Lambda .NET 8 (container image from Amazon ECR) on alias `live` (provisioned concurrency = 3, in-process cache)
        → Open-Meteo (retries, timeouts, circuit breaker)
        → AU monthly fallback table (on failure)
 ```
@@ -34,12 +34,14 @@ flowchart LR
   V[Viewer]
   CF[CloudFront AU + CDN cache]
   GW[API Gateway throttle]
-  L[Lambda alias live PC=3]
+  ECR[(Amazon ECR container image)]
+  L[Lambda .NET 8 alias live PC=3]
   MEM[IMemoryCache]
   OM[Open-Meteo]
   FB[AU monthly fallback]
 
   V --> CF --> GW --> L
+  ECR -.->|platform pulls image| L
   L --> MEM
   MEM -->|miss / expired| OM
   MEM -->|hit| R[Response]
@@ -84,7 +86,7 @@ flowchart LR
 
 | Parameter | Purpose / notes |
 |-----------|------------------|
-| **Runtime** | .NET 8 (`dotnet8` or container — pick one stack). |
+| **Runtime** | **.NET 8 as a Lambda container image** built from the repo **Dockerfile**, stored in **Amazon ECR**, referenced by **`image_uri`** in Terraform (`package_type = Image`). |
 | **Architecture** | `arm64` vs `x86_64` (document choice; arm64 common for cost). |
 | **Memory** | Affects CPU; start e.g. **256–512 MB**, tune with cold/warm profiling. |
 | **Timeout** | Must cover **worst-case Open-Meteo path** (per-attempt timeout × attempts + margin); stay **under API Gateway integration limit** (~29s on many setups). |
@@ -717,7 +719,7 @@ Use **GitHub Environments** (`production`, etc.) with **required reviewers** bet
 |-------|---------|
 | **Build** | Restore, build .NET; optional `dotnet format --verify-no-changes`. |
 | **Test** | `dotnet test`; include **fake `HttpMessageHandler`** tests for **retry**, **breaker**, **fallback**, and **both feature flags** (§10.2). |
-| **Package** | `dotnet publish` → **Lambda deployment package** (artifact). |
+| **Package** | **`docker build`** → push image to **Amazon ECR** (when CI has AWS credentials) → Terraform passes **image digest or URI** into **`aws_lambda_function`** (container package). |
 | **IaC** | Upload artifact; Terraform **fmt** (optional), **validate**, **`plan`**; use **`-var-file=env/<env>.tfvars`** when modeling multiple stacks (§12.4); optional `TF_VAR_*` overrides. |
 | **Cache** | NuGet cache; optional Terraform plugin cache. |
 | **Deploy (blue/green, §12.3)** | With AWS credentials (§13.1): **`apply`** using **`-var-file=env/<env>.tfvars`** → optional **weighted alias** → **smoke** → **`apply` promote 100%**; **rollback** via **`apply`** / reverted vars. Optional **GitHub Environment** approvals between canary and full promote. |
