@@ -47,12 +47,11 @@ public sealed class OpenMeteoWeatherProvider(
                 MaxDelay = TimeSpan.FromMilliseconds(Math.Max(1, http.BackoffMaxMs)),
                 DelayGenerator = args => ValueTask.FromResult<TimeSpan?>(
                     args.Outcome.Exception is OpenMeteoFailedException { RetryAfter: { } wait }
-                        ? TimeSpan.FromMilliseconds(Math.Min(http.BackoffMaxMs, Math.Max(0, wait.TotalMilliseconds)))
+                        ? (wait < TimeSpan.Zero ? TimeSpan.Zero : wait)
                         : null),
                 OnRetry = args =>
                 {
-                    var reason = (args.Outcome.Exception as OpenMeteoFailedException)?.Reason
-                        ?? args.Outcome.Exception?.GetType().Name;
+                    var reason = ((OpenMeteoFailedException)args.Outcome.Exception!).Reason;
                     logger.LogInformation(
                         "Open-Meteo transient failure. City={City} Attempt={Attempt} Reason={Reason} DelayMs={DelayMs}",
                         city,

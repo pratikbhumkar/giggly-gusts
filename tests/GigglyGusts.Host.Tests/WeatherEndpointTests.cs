@@ -26,7 +26,7 @@ public sealed class WeatherEndpointTests : IClassFixture<WebApplicationFactory<P
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
-        Assert.Contains("public", response.Headers.CacheControl?.ToString() ?? string.Empty, StringComparison.Ordinal);
+        Assert.Contains("private", response.Headers.CacheControl?.ToString() ?? string.Empty, StringComparison.Ordinal);
         Assert.Contains("max-age=120", response.Headers.CacheControl?.ToString() ?? string.Empty, StringComparison.Ordinal);
 
         var doc = JsonNode.Parse(await response.Content.ReadAsStringAsync());
@@ -35,10 +35,9 @@ public sealed class WeatherEndpointTests : IClassFixture<WebApplicationFactory<P
         Assert.Equal(22.5, doc["tempC"]?.GetValue<double>());
         Assert.Equal("Partly cloudy", doc["condition"]?.GetValue<string>());
         Assert.Equal("fallback", doc["source"]?.GetValue<string>());
-        var correlationId = doc["correlationId"]?.GetValue<string>();
-        Assert.False(string.IsNullOrEmpty(correlationId));
+        Assert.Null(doc["correlationId"]);
         Assert.True(response.Headers.TryGetValues("X-Correlation-Id", out var hdr));
-        Assert.Equal(correlationId, hdr.First());
+        Assert.False(string.IsNullOrEmpty(hdr.First()));
     }
 
     [Fact]
@@ -76,8 +75,6 @@ public sealed class WeatherEndpointTests : IClassFixture<WebApplicationFactory<P
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.True(response.Headers.TryGetValues("X-Correlation-Id", out var hdr));
         Assert.Equal("abc-123", hdr.First());
-        var doc = JsonNode.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal("abc-123", doc?["correlationId"]?.GetValue<string>());
     }
 
     private sealed class ProblemDetailsDto

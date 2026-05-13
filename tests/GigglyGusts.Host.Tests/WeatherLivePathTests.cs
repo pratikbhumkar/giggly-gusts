@@ -52,7 +52,6 @@ public sealed class WeatherLivePathTests : IClassFixture<WebApplicationFactory<P
         Assert.Equal(19.5, doc["tempC"]!.GetValue<double>());
         Assert.Equal("Partly cloudy", doc["condition"]!.GetValue<string>());
         Assert.Equal("live", doc["source"]!.GetValue<string>());
-        Assert.False(string.IsNullOrEmpty(doc["correlationId"]!.GetValue<string>()));
         Assert.Equal(1, handler.CallCount);
     }
 

@@ -48,14 +48,15 @@ public sealed class WeatherController : ControllerBase
                     "Only allowlisted Australian cities are supported in this phase (see README)."));
         }
 
-        Response.Headers.CacheControl = $"public, max-age={SuccessCacheSeconds}";
+        // private so shared caches (CDN/proxy) don't store responses paired with a per-request
+        // X-Correlation-Id header; correlationId is no longer in the body.
+        Response.Headers.CacheControl = $"private, max-age={SuccessCacheSeconds}";
         var body = new WeatherApiResponse
         {
             City = lookup.CityDisplay,
             TempC = lookup.TempC,
             Condition = lookup.Condition,
             Source = lookup.Source,
-            CorrelationId = correlationId,
         };
 
         _logger.LogInformation(

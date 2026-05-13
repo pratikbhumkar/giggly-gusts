@@ -18,7 +18,4 @@ public sealed class WeatherApiResponse
 
     [JsonPropertyName("source")]
     public string Source { get; init; } = string.Empty;
-
-    [JsonPropertyName("correlationId")]
-    public string CorrelationId { get; init; } = string.Empty;
 }

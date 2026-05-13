@@ -25,9 +25,19 @@ public sealed class WeatherProviderRouter(
         {
             return await live.LookupAsync(normalizedCityKey, cancellationToken);
         }
-        catch (OpenMeteoFailedException ex)
+        catch (OpenMeteoFailedException ex) when (ex.IsTransient)
         {
             logger.LogWarning("Live weather failed, serving fallback. Reason={Reason}", ex.Reason);
+            return await mock.LookupAsync(normalizedCityKey, cancellationToken);
+        }
+        catch (OpenMeteoFailedException ex)
+        {
+            // Non-transient = protocol drift / config bug (malformed_json, incomplete_payload,
+            // upstream_4xx_*). Option-A fallback still applies, but the log level escalates so
+            // operators can spot the class of failure that retries cannot fix.
+            logger.LogError(
+                "Live weather failed non-transiently; serving fallback to preserve contract. Reason={Reason}",
+                ex.Reason);
             return await mock.LookupAsync(normalizedCityKey, cancellationToken);
         }
     }
