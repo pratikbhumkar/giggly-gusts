@@ -21,6 +21,11 @@ jobs:
     env:
       ASPNETCORE_ENVIRONMENT: Development
       DOTNET_ENVIRONMENT: Development
+      # CI never hits the real Open-Meteo: live-path tests use HttpMessageHandler fakes.
+      # MaintenanceMode is asserted via in-memory configuration inside the tests; keep the
+      # process default off so unrelated tests behave like normal traffic.
+      Weather__UseOpenMeteo: "false"
+      Weather__MaintenanceMode: "false"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

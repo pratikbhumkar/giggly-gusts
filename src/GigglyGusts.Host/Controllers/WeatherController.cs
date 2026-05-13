@@ -25,7 +25,8 @@ public sealed class WeatherController : ControllerBase
     public async Task<IActionResult> GetAsync([FromQuery] string? city, CancellationToken cancellationToken)
     {
         var correlationId = GetCorrelationId();
-        var normalized = CityNormalizer.NormalizeForLookup(city);
+        // Trim and upper-invariant fold so the allowlist match is whitespace- and case-insensitive.
+        var normalized = (city ?? string.Empty).Trim().ToUpperInvariant();
 
         if (string.IsNullOrEmpty(normalized))
         {
@@ -47,18 +48,19 @@ public sealed class WeatherController : ControllerBase
                     "Only allowlisted Australian cities are supported in this phase (see README)."));
         }
 
-        Response.Headers.CacheControl = $"public, max-age={SuccessCacheSeconds}";
+        // private so shared caches (CDN/proxy) don't store responses paired with a per-request
+        // X-Correlation-Id header; correlationId is no longer in the body.
+        Response.Headers.CacheControl = $"private, max-age={SuccessCacheSeconds}";
         var body = new WeatherApiResponse
         {
             City = lookup.CityDisplay,
             TempC = lookup.TempC,
             Condition = lookup.Condition,
             Source = lookup.Source,
-            CorrelationId = correlationId,
         };
 
         _logger.LogInformation(
-            "Weather mock success. City={City} Source={Source} CorrelationId={CorrelationId}",
+            "Weather lookup success. City={City} Source={Source} CorrelationId={CorrelationId}",
             lookup.CityDisplay,
             lookup.Source,
             correlationId);
