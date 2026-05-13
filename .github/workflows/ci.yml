@@ -70,7 +70,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (Mode A: no registry push)
+      - name: "Build image (Mode A: no registry push)"
         uses: docker/build-push-action@v6
         with:
           context: .
