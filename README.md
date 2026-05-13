@@ -24,6 +24,29 @@ curl -sS -i http://localhost:5025/health
 
 You should see JSON with **`"environment":"Development"`** and a **`diagnostics`** object (non-secret) because [`appsettings.Development.json`](./src/GigglyGusts.Host/appsettings.Development.json) sets **`Health:IncludeDiagnostics`** to **true**.
 
+### `GET /weather` (mock provider only)
+
+**Open-Meteo and other live weather HTTP clients are not used in this phase** — responses come from an in-process **`MockWeatherProvider`** behind **`IWeatherProvider`** (swap-friendly for a later phase).
+
+**Australia-only rule:** `city` is **trimmed** and compared using a **normalized uppercase key** against an **allowlist** in [`AustralianCityCatalog`](./src/GigglyGusts.Host/Weather/AustralianCityCatalog.cs): **Sydney, Melbourne, Brisbane, Perth, Adelaide, Hobart, Darwin, Canberra**. Any other value (including non-AU cities) returns **400** with **ProblemDetails** (and **`Cache-Control: no-store`**). Successful responses use **`Cache-Control: public, max-age=120`**.
+
+Success JSON (stable field names): **`city`**, **`tempC`**, **`condition`**, **`source`** (`fallback` for mock, matching **`live` \| `fallback`** in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)), **`correlationId`** (matches **`X-Correlation-Id`** when the client sends one).
+
+```bash
+# Valid allowlisted city (200 + JSON contract)
+curl -sS -i "http://localhost:5025/weather?city=Sydney"
+
+# Invalid: empty city after trim (400 + ProblemDetails, no-store)
+curl -sS -i "http://localhost:5025/weather?city="
+
+# Non-allowlisted / non-AU example (400 + ProblemDetails, no-store)
+curl -sS -i "http://localhost:5025/weather?city=Paris"
+```
+
+### Swagger / OpenAPI
+
+OpenAPI JSON is at **`/swagger/v1/swagger.json`** and the UI at **`/swagger`**. The **`http`** / **`https`** launch profiles open **`/swagger`** by default (see [`launchSettings.json`](./src/GigglyGusts.Host/Properties/launchSettings.json)).
+
 ### Production configuration locally
 
 Run with **Production** so [`appsettings.Production.json`](./src/GigglyGusts.Host/appsettings.Production.json) is selected and diagnostics stay off:
@@ -50,13 +73,18 @@ dotnet test GigglyGusts.sln
 [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) runs on **push** and **pull_request** to **`main`**:
 
 - **`ci`:** **restore** → **`dotnet format --verify-no-changes`** → **build** → **test** (SDK from `global.json`). The job sets **`ASPNETCORE_ENVIRONMENT=Development`** and **`DOTNET_ENVIRONMENT=Development`** so CI matches the default local story.
-- **`terraform`:** **`terraform fmt -check -recursive`**, **`init -backend=false`**, **`validate`**, **`plan`** in **`infra/`** — no **apply**, no required **AWS** / **OIDC** secrets.
+- **`terraform`:** **`terraform fmt -check -recursive`**, **`init -backend=false`**, **`validate`**, **`plan`** in **`infra/`** — **no `apply`** on the default pipeline. A **LocalStack** service runs in that job so **`terraform plan`** can target the AWS provider **without real `AWS_*` credentials**; the job sets **`TF_VAR_use_localstack=true`**, **`TF_VAR_localstack_endpoint`**, and **`TF_VAR_container_image`** (placeholder public Lambda base image URI for the Lambda **container** resource).
 - **Token & concurrency:** workflow **`permissions`** are limited to **`contents: read`** (clone) and **`actions: write`** (NuGet **cache** save/restore). **`concurrency`** dedupes runs per ref and **`cancel-in-progress: true`** cancels an in-flight run when a newer commit is pushed to the same branch/PR.
 
-## Phase 3 (this slice)
+## Phase 3 (completed)
 
-- **Application:** environment-aware **`/health`** JSON ( **`environment`** from **`IHostEnvironment.EnvironmentName`**, optional **`diagnostics`** from config) differs between **Development** and **Production** using **`appsettings.*.json`** — no secrets in responses or logs.
-- **Terraform:** **`infra/modules/naming/`** child module (variables / locals / outputs only) for **name prefix**, **standard tag map**, and **planned** Lambda / log group / ECR / API Gateway **name strings**; root **`main.tf`** wires the module. **No `provider "aws"`**, no **`aws_*`** resources or data sources — **AWS resources land in Phase 4+**.
+- **Application:** environment-aware **`/health`** JSON with optional **`diagnostics`** from config.
+- **Terraform:** **`infra/modules/naming/`** for shared naming and tags (still used by root config).
+
+## Phase 4 (this slice)
+
+- **Application:** **`GET /weather?city={city}`** via **`ControllerBase`** + DI; **`IWeatherProvider`** with **`MockWeatherProvider`** only; **AU allowlist** and **ProblemDetails** on **400**; correlation id header + body field; unit tests (no **`WebApplicationFactory`**) and integration tests (**`WebApplicationFactory<Program>`**) cover rules and HTTP.
+- **Terraform:** **`aws_iam_role`** (Lambda execution) + **`aws_iam_role_policy_attachment`** (basic execution), **`aws_cloudwatch_log_group`**, **`aws_lambda_function`** with **`package_type = Image`** and **`image_uri = var.container_image`**. **Plan-only** in default CI (LocalStack + **`TF_VAR_*`** as above); nothing is deployed by the main workflow.
 
 ## Docs and phased delivery
 

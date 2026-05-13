@@ -1,22 +1,39 @@
-# infra — Terraform skeleton (Phase 3 structure)
+# infra — Terraform (Phase 4+)
 
-No cloud providers are configured yet; configuration uses **variables**, **locals**, and **outputs** only so `fmt`, `validate`, and `plan` run in CI **without AWS credentials**.
+Root module wires **`modules/naming`**, the **`aws`** provider, and a **thin compute slice** toward the Lambda path described in **[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)** (container image on Lambda, logs, execution role).
 
-**Terraform CLI version:** GitHub Actions pins **Terraform 1.10.5** (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) `hashicorp/setup-terraform`). For local runs that should match CI (fmt drift, provider resolution), install the same version — e.g. **`tfenv use 1.10.5`**, **`mise install terraform@1.10.5`**, or the official HashiCorp release — then run the commands below from **`infra/`**.
+**Terraform CLI version:** GitHub Actions pins **Terraform 1.10.5** (see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) `hashicorp/setup-terraform`). Match that locally for consistent **`fmt`** / lockfile behaviour.
 
-Layout:
+## Layout
 
-- **`main.tf`** — wires the **`modules/naming`** child module (variables, locals, outputs only; no `resource` blocks).
-- **`modules/naming/`** — shared **name prefix**, **standard tag map**, and **planned resource name strings** for Phase 4+ (Lambda, logs, ECR, API Gateway).
+- **`main.tf`** — naming module and shared wiring.
+- **`providers.tf`** — `provider "aws"`; when **`var.use_localstack`** is **true**, dummy credentials and service **endpoints** point at LocalStack (CI), so **`plan`** does not need real **AWS** keys.
+- **`compute.tf`** — **`aws_iam_role`** (Lambda assume role), **`aws_iam_role_policy_attachment`** (AWSLambdaBasicExecutionRole), **`aws_cloudwatch_log_group`**, **`aws_lambda_function`** with **`package_type = "Image"`** and **`image_uri = var.container_image`** (set **`TF_VAR_container_image`** in automation or use the default placeholder image URI).
+- **`variables.tf`**, **`outputs.tf`**, **`versions.tf`** — configuration surface and provider pins.
+- **`.terraform.lock.hcl`** — commit this after **`terraform init`** so CI resolves the same provider builds.
 
-**Default story:** no remote backend and **no `terraform apply`** — local and CI use **`-backend=false`** for init and stop at **plan**.
+## Default story
 
-From this directory (`infra/`):
+No remote backend in-repo and **no `terraform apply`** in the **default** GitHub Actions workflow: CI runs **`init -backend=false`**, **`validate`**, and **`plan`** only.
+
+## Local commands (from `infra/`)
 
 ```bash
-terraform init -backend=false
+terraform fmt -recursive
+terraform init -backend=false -input=false
 terraform validate
-terraform plan
 ```
 
-After adding providers or changing version constraints, re-run **`terraform init -backend=false`** and commit **`.terraform.lock.hcl`** when introduced.
+**Plan against real AWS:** configure the normal provider (do **not** set **`use_localstack`**) and ensure AWS credentials are available; **`terraform plan`**.
+
+**Plan like CI (LocalStack):** run LocalStack with **`SERVICES=iam,lambda,logs,sts`**, then for example:
+
+```bash
+export TF_VAR_use_localstack=true
+export TF_VAR_localstack_endpoint=http://127.0.0.1:4566
+export TF_VAR_container_image=public.ecr.aws/lambda/dotnet:8
+terraform init -backend=false -input=false
+terraform plan -input=false
+```
+
+After changing provider constraints, re-run **`terraform init -backend=false`** and commit **`.terraform.lock.hcl`** when it changes.
