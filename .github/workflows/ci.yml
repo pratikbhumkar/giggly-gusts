@@ -52,12 +52,36 @@ jobs:
 
   terraform:
     runs-on: ubuntu-latest
+    services:
+      localstack:
+        image: localstack/localstack:3.5.0
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: iam,lambda,logs,sts
+          LS_LOG: warn
+    env:
+      TF_VAR_use_localstack: "true"
+      TF_VAR_localstack_endpoint: "http://127.0.0.1:4566"
+      TF_VAR_container_image: "public.ecr.aws/lambda/dotnet:8"
     defaults:
       run:
         working-directory: infra
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Wait for LocalStack
+        run: |
+          for i in $(seq 1 45); do
+            if curl -sf http://127.0.0.1:4566/_localstack/health >/dev/null; then
+              echo "LocalStack is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "LocalStack did not become healthy in time"
+          exit 1
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3

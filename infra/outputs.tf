@@ -47,3 +47,13 @@ output "aws_region" {
   description = "Echo of var.aws_region (naming context until provider wiring)."
   value       = var.aws_region
 }
+
+output "lambda_function_arn" {
+  description = "Managed Lambda function ARN (plan/apply target for Phase 4+)."
+  value       = aws_lambda_function.api.arn
+}
+
+output "lambda_exec_role_arn" {
+  description = "IAM role ARN used by the API Lambda."
+  value       = aws_iam_role.lambda_exec.arn
+}
