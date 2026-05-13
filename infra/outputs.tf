@@ -73,7 +73,21 @@ output "lambda_alias_arn" {
   value       = aws_lambda_alias.live.arn
 }
 
+output "lambda_alias_name" {
+  description = "Name of the stable Lambda alias (matches var.lambda_alias_name; the runbook references it by name when invoking via the AWS CLI)."
+  value       = aws_lambda_alias.live.name
+}
+
 output "lambda_function_version" {
   description = "Published version of the Lambda function targeted by the alias."
   value       = aws_lambda_function.api.version
+}
+
+# Phase 7 placeholder: the runbook references `api_base_url` but no public HTTP fronting
+# (API Gateway / CloudFront / Lambda Function URL) is wired yet — those land in a later
+# slice. Emitting null here keeps `terraform output api_base_url` working and signals that
+# the maintainer must substitute the actual URL until the fronting slice lands.
+output "api_base_url" {
+  description = "Public base URL for /health and /weather. Null until the API fronting slice (API Gateway HTTP API or Function URL) lands; see README 'Deployment story (plan-only)'."
+  value       = null
 }

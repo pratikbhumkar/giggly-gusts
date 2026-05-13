@@ -174,6 +174,118 @@ dotnet test GigglyGusts.sln
 
 Mode B is **not** wired into this repo's default workflow on purpose: a take-home should not require maintainers to provision an AWS account before contributors can PR. Treat Mode A's `terraform plan` as a **structural** check; a real deploy must go through Mode B against the actual ECR repository defined in [`infra/ecr.tf`](./infra/ecr.tf).
 
+## Deployment story (plan-only)
+
+This take-home is **deliberately plan-only**. Default PR CI proves the app builds, the test suite (unit + integration + faked Open-Meteo) passes, the container image builds for `linux/arm64`, and Terraform `fmt` / `validate` / `plan` succeed against LocalStack — **no AWS account is touched** and **no `AWS_*` secrets are required for green CI**. The compute decision (Lambda + container from ECR) is locked in [ADR 0001](./docs/design/adr/0001-lambda-container-compute.md); this phase is the “Phase 7 — Plan remains default; optional `apply` + smoke” entry in [`docs/PHASES.md`](./docs/PHASES.md).
+
+There is **no `apply` workflow**. There is **no `id-token: write`** permission, no AWS-related GitHub secret, and no environment configuration that would unlock one. The runbook below documents what a maintainer would run **manually** from a workstation — the gap between “PR green” and “deployed” is a **choice**, not an oversight.
+
+### AWS authentication options (documented, not enabled)
+
+Both options below would unlock a Mode-B / `apply` flow if a real team adopted this repo. **Neither is wired today.**
+
+- **Option A — GitHub OIDC → AWS IAM role (preferred for real teams).**
+  Create an IAM role whose trust policy accepts `token.actions.githubusercontent.com` as the OIDC provider and restricts the assertion subject to **this repo** (e.g. `repo:pratikbhumkar/giggly-gusts:ref:refs/heads/main` and / or a GitHub Environment claim such as `repo:pratikbhumkar/giggly-gusts:environment:prod`). Permissions on the role: ECR push (`ecr:GetAuthorizationToken`, `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, `ecr:PutImage`) scoped to the repository ARN; Lambda update (`lambda:UpdateFunctionCode`, `lambda:UpdateFunctionConfiguration`, `lambda:PublishVersion`, `lambda:UpdateAlias`, `lambda:GetFunction`); IAM read on the function role; and CloudWatch Logs read for smoke (`logs:FilterLogEvents`). Workflows would call `aws-actions/configure-aws-credentials@v4` with `role-to-assume` plus `id-token: write` permission.
+- **Option B — Narrow IAM user keys in GitHub Encrypted Secrets (simpler, less ideal).**
+  A single IAM user with the same minimal permissions as Option A, access keys stored in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` repository secrets. Rotation expectation: every 90 days at the latest; revoke immediately on contributor change. No long-lived credentials in the repo, ever.
+
+Both paths land at the same Terraform variables (`TF_VAR_container_image`, `TF_VAR_use_localstack=false`, real `AWS_REGION`); the only difference is **how** AWS trusts the runner.
+
+### Manual deploy runbook (apply-equivalent, documented only)
+
+Prereqs (documented, not enforced by CI):
+
+- AWS CLI v2 with credentials configured (`aws configure` or `aws sso login`).
+- Docker (Buildx for cross-platform builds — see [Architecture pinning](#architecture-pinning-must-match-lambda) for the `linux/arm64` requirement).
+- Terraform `1.10.5` (matches CI `hashicorp/setup-terraform`).
+- `jq` for parsing the AWS CLI output in step 3.
+
+```bash
+export AWS_REGION=ap-southeast-2
+export IMAGE_TAG=$(git rev-parse --short HEAD)
+
+# 1) Build the container image (linux/arm64 to match infra/compute.tf).
+docker buildx build --platform linux/arm64 --load -t giggly-gusts:$IMAGE_TAG .
+
+# 2) Resolve the ECR repository URL from Terraform outputs.
+cd infra
+terraform init
+ECR_URL=$(terraform output -raw ecr_repository_url)
+cd -
+
+# 3) Authenticate Docker to ECR and push the tag, then capture the immutable digest.
+aws ecr get-login-password --region "$AWS_REGION" \
+  | docker login --username AWS --password-stdin "$ECR_URL"
+docker tag giggly-gusts:$IMAGE_TAG "$ECR_URL:$IMAGE_TAG"
+docker push "$ECR_URL:$IMAGE_TAG"
+
+IMAGE_DIGEST=$(aws ecr describe-images \
+  --repository-name "$(basename "$ECR_URL")" \
+  --image-ids imageTag="$IMAGE_TAG" \
+  --query 'imageDetails[0].imageDigest' --output text)
+IMAGE_URI="${ECR_URL}@${IMAGE_DIGEST}"
+
+# 4) Plan and apply Terraform with the immutable digest reference.
+cd infra
+terraform plan  -var "container_image=${IMAGE_URI}"
+terraform apply -var "container_image=${IMAGE_URI}"
+```
+
+Notes:
+
+- **Always pin to a digest (`@sha256:...`) for real deploys.** Tags are mutable; `infra/ecr.tf` documents that the repository is `MUTABLE` for iteration only. Switch the repository to `IMMUTABLE` before any production-like apply.
+- **`apply` is run manually in this story; CI does not.** The default CI pipeline will never attempt step 4 — that is the point of the plan-only contract.
+- **Region, account, naming, retry knobs, and feature flags** all come from Terraform variables already documented in [`infra/variables.tf`](./infra/variables.tf) and [`infra/README.md`](./infra/README.md). Override per-environment with `-var` or `*.tfvars`.
+
+### Smoke commands (documented, copy-pasteable)
+
+After a hypothetical apply, verify the deployment against the **stable Phase 4 / 6 contract** (`/health`, `/weather`):
+
+```bash
+cd infra
+BASE_URL=$(terraform output -raw api_base_url)
+cd -
+
+# /health -> 200 with status=ok and the active environment surfaced.
+curl -sS -i "$BASE_URL/health"
+
+# /weather happy path (AU city) -> 200, source ∈ {live, fallback}.
+curl -sS -i "$BASE_URL/weather?city=Melbourne"
+
+# /weather invalid input -> 400 ProblemDetails (Cache-Control: no-store).
+curl -sS -i "$BASE_URL/weather?city="
+
+# Optional: simple latency observation (success path).
+curl -sS -o /dev/null -w 'http=%{http_code} time=%{time_total}s\n' \
+  "$BASE_URL/weather?city=Sydney"
+```
+
+Robustness rules:
+
+- **`source ∈ {live, fallback}` is acceptable** for the smoke success case — Open-Meteo is a public dependency and can be transiently unreachable; the [Live path failure policy](#get-weather-mock-or-live) (Option A) explicitly serves the AU fallback rather than 5xx, and that *is* the contract. The functional shape (200 + the four fields `city / tempC / condition / source`) is what smoke must enforce.
+- **Maintenance.** If `MAINTENANCE_MODE=true` was applied, the documented [maintenance response](#maintenance-mode) (`503` ProblemDetails + `Cache-Control: no-store`) is the expected `curl` output; smoke must treat that as **success-of-mode**, not as a smoke failure.
+- **`api_base_url` is currently a Terraform `null`** — the API fronting slice (API Gateway HTTP API or Lambda Function URL) lands in a later phase, at which point this output will populate. Until then, substitute the deployed URL by hand or skip the smoke step; the `terraform plan` still validates the rest of the stack.
+
+### Rollback
+
+There is **no automated rollback** in this phase — by design. To revert, re-run the manual sequence above with the **previous image digest** as the value of `-var "container_image=..."` and re-apply:
+
+```bash
+PREVIOUS_DIGEST="sha256:<digest captured from the prior deploy>"
+cd infra
+terraform apply -var "container_image=${ECR_URL}@${PREVIOUS_DIGEST}"
+```
+
+Because `aws_lambda_function.publish = true` (Phase 6), every applied digest cuts a fresh Lambda **version** and the `live` alias flips atomically to it; rolling back is the same operation against the older digest.
+
+### Why this is acceptable for the take-home
+
+- **Default PR CI proves buildability and Terraform validity on every change** — the same gates that would gate a real `apply` job already gate every PR (just without the `apply` step). Drift between “code merges” and “deploy works” is bounded by what `plan` can tell us, not by hidden tribal knowledge.
+- **Manual deploy is explicit and auditable.** A single human runs steps 1 – 4 with their AWS profile; the digest pushed and the digest applied are visible in shell history and in the resulting Terraform `plan` output. There is no opaque release pipeline to debug.
+- **No AWS spend, no credential exposure.** Reviewers can clone, build, test, and `terraform plan` end-to-end with zero account setup; the repo cannot leak credentials it does not have.
+
+See [ADR 0001](./docs/design/adr/0001-lambda-container-compute.md) for the compute decision and [`docs/PHASES.md` Phase 7](./docs/PHASES.md#phase-7--plan-remains-default-optional-apply--smoke) for the broader phase context.
+
 ## Phase 3 (completed)
 
 - **Application:** environment-aware **`/health`** JSON with optional **`diagnostics`** from config.
@@ -190,7 +302,7 @@ Mode B is **not** wired into this repo's default workflow on purpose: a take-hom
 - **Terraform:** **`aws_ecr_repository`** + lifecycle policy.
 - **CI:** **`docker`** job builds + smoke-tests after `ci`; default workflow does not push to ECR or `apply`.
 
-## Phase 6 (this slice)
+## Phase 6 (completed)
 
 - **Live provider:** [`OpenMeteoWeatherProvider`](./src/GigglyGusts.Host/Weather/OpenMeteoWeatherProvider.cs) behind `IHttpClientFactory` named client `open-meteo`. Resilience is delegated to a **Polly v8 `ResiliencePipeline`** built per call from the current options — bounded retries, exponential backoff with built-in jitter, a `DelayGenerator` that honours `Retry-After` when 429-retry is on, and native `CancellationToken` propagation. Per-attempt timeout comes from `HttpClient.Timeout`.
 - **Fallback policy:** [`WeatherProviderRouter`](./src/GigglyGusts.Host/Weather/WeatherProviderRouter.cs) downgrades to **`source=fallback`** when the live pipeline exhausts retries; user cancellations propagate.
@@ -199,6 +311,12 @@ Mode B is **not** wired into this repo's default workflow on purpose: a take-hom
 - **Tests:** unit tests assert observable outcomes (attempt counts, mapping for happy / malformed / incomplete payloads, 429 rules, cancellation propagation) — the retry / backoff math itself is Polly's responsibility and isn't re-asserted. Integration tests cover live success, 5xx → retry → fallback, timeout → retry → fallback, garbage JSON → fallback, and maintenance mode (no outbound HTTP).
 - **Terraform:** Lambda environment variables for every new key, **`aws_lambda_function.publish = true`**, **`aws_lambda_alias "live"`**, and **`aws_lambda_provisioned_concurrency_config`** that activates when **`var.provisioned_concurrency_count > 0`** (default `0` — non-prod / take-home).
 - **CI:** `ci` job explicitly exports `Weather__UseOpenMeteo=false` and `Weather__MaintenanceMode=false` so tests never depend on Open-Meteo uptime.
+
+## Phase 7 (this slice)
+
+- **Deployment story:** the new [Deployment story (plan-only)](#deployment-story-plan-only) section is the authoritative description of how this repo gets deployed today (it doesn't, by choice) and how a maintainer would deploy it manually if AWS credentials were available — including AWS auth options (OIDC vs IAM keys), the build → ECR push → digest → `terraform apply` runbook, smoke commands against the Phase 4 / 6 contract, and a digest-pinned rollback procedure.
+- **Terraform outputs:** added [`lambda_alias_name`](./infra/outputs.tf) and a documented placeholder [`api_base_url`](./infra/outputs.tf) (currently `null` — populates once the API fronting slice lands) so the runbook commands work without hand-edited names.
+- **CI:** unchanged from Phase 5 / 6 — no `apply` workflow, no `id-token: write`, no AWS-related secrets. PR CI still runs `dotnet` + `docker build` + `terraform fmt / validate / plan` and stays green without any AWS account.
 
 ## Docs and phased delivery
 
