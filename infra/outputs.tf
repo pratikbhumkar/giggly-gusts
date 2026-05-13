@@ -57,3 +57,13 @@ output "lambda_exec_role_arn" {
   description = "IAM role ARN used by the API Lambda."
   value       = aws_iam_role.lambda_exec.arn
 }
+
+output "ecr_repository_url" {
+  description = "ECR repository URL for the API Lambda container image."
+  value       = aws_ecr_repository.api.repository_url
+}
+
+output "ecr_repository_arn" {
+  description = "ECR repository ARN (useful for IAM policy scoping in later phases)."
+  value       = aws_ecr_repository.api.arn
+}

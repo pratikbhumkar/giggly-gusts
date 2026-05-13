@@ -13,5 +13,6 @@ provider "aws" {
     logs           = var.use_localstack ? var.localstack_endpoint : null
     sts            = var.use_localstack ? var.localstack_endpoint : null
     cloudwatchlogs = var.use_localstack ? var.localstack_endpoint : null
+    ecr            = var.use_localstack ? var.localstack_endpoint : null
   }
 }
