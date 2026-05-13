@@ -43,9 +43,9 @@ curl -sS -i "http://localhost:5025/weather?city="
 curl -sS -i "http://localhost:5025/weather?city=Paris"
 ```
 
-### Swagger / OpenAPI (Development only)
+### Swagger / OpenAPI
 
-In **Development**, OpenAPI JSON is at **`/swagger/v1/swagger.json`** and the UI at **`/swagger`**. The **`http`** / **`https`** launch profiles open **`/swagger`** by default (see [`launchSettings.json`](./src/GigglyGusts.Host/Properties/launchSettings.json)). **Production** does not expose Swagger routes.
+OpenAPI JSON is at **`/swagger/v1/swagger.json`** and the UI at **`/swagger`**. The **`http`** / **`https`** launch profiles open **`/swagger`** by default (see [`launchSettings.json`](./src/GigglyGusts.Host/Properties/launchSettings.json)).
 
 ### Production configuration locally
 
