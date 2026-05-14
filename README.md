@@ -185,9 +185,14 @@ There is **no `apply` workflow**. There is **no `id-token: write`** permission, 
 Both options below would unlock a Mode-B / `apply` flow if a real team adopted this repo. **Neither is wired today.**
 
 - **Option A — GitHub OIDC → AWS IAM role (preferred for real teams).**
-  Create an IAM role whose trust policy accepts `token.actions.githubusercontent.com` as the OIDC provider and restricts the assertion subject to **this repo** (e.g. `repo:pratikbhumkar/giggly-gusts:ref:refs/heads/main` and / or a GitHub Environment claim such as `repo:pratikbhumkar/giggly-gusts:environment:prod`). Permissions on the role: ECR push (`ecr:GetAuthorizationToken`, `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, `ecr:PutImage`) scoped to the repository ARN; Lambda update (`lambda:UpdateFunctionCode`, `lambda:UpdateFunctionConfiguration`, `lambda:PublishVersion`, `lambda:UpdateAlias`, `lambda:GetFunction`); IAM read on the function role; and CloudWatch Logs read for smoke (`logs:FilterLogEvents`). Workflows would call `aws-actions/configure-aws-credentials@v4` with `role-to-assume` plus `id-token: write` permission.
+  Create an IAM role whose trust policy accepts `token.actions.githubusercontent.com` as the OIDC provider and restricts the assertion subject to **this repo** (e.g. `repo:pratikbhumkar/giggly-gusts:ref:refs/heads/main` and / or a GitHub Environment claim such as `repo:pratikbhumkar/giggly-gusts:environment:prod`). Permissions on the role, expressed as **two ECR statements** because `ecr:GetAuthorizationToken` is service-level and AWS rejects a repository-scoped resource on it:
+  - **Service-level (must be `Resource: "*"`):** `ecr:GetAuthorizationToken`.
+  - **Repository-scoped (`Resource: aws_ecr_repository.api.arn`):** `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, `ecr:PutImage`, `ecr:DescribeImages` (the runbook's step 3 calls `aws ecr describe-images` to capture the immutable digest).
+  - **Lambda update:** `lambda:UpdateFunctionCode`, `lambda:UpdateFunctionConfiguration`, `lambda:PublishVersion`, `lambda:UpdateAlias`, `lambda:GetFunction` — scoped to `aws_lambda_function.api.arn` and `aws_lambda_alias.live.arn`.
+  - **Misc:** IAM read on the function role; CloudWatch Logs read for smoke (`logs:FilterLogEvents`).
+  Workflows would call `aws-actions/configure-aws-credentials@v4` with `role-to-assume` plus `id-token: write` permission.
 - **Option B — Narrow IAM user keys in GitHub Encrypted Secrets (simpler, less ideal).**
-  A single IAM user with the same minimal permissions as Option A, access keys stored in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` repository secrets. Rotation expectation: every 90 days at the latest; revoke immediately on contributor change. No long-lived credentials in the repo, ever.
+  A single IAM user with the **same two-statement ECR split** above (`ecr:GetAuthorizationToken` on `*`, all other ECR actions including `ecr:DescribeImages` scoped to the repository ARN) plus the same Lambda / IAM-read / Logs-read permissions as Option A; access keys stored in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` repository secrets. Rotation expectation: every 90 days at the latest; revoke immediately on contributor change. No long-lived credentials in the repo, ever.
 
 Both paths land at the same Terraform variables (`TF_VAR_container_image`, `TF_VAR_use_localstack=false`, real `AWS_REGION`); the only difference is **how** AWS trusts the runner.
 
@@ -197,6 +202,7 @@ Prereqs (documented, not enforced by CI):
 
 - AWS CLI v2 with credentials configured (`aws configure` or `aws sso login`).
 - Docker (Buildx for cross-platform builds — see [Architecture pinning](#architecture-pinning-must-match-lambda) for the `linux/arm64` requirement).
+- On amd64 hosts (Intel Mac, amd64 Linux), register the arm64 emulator once before step 1: `docker run --rm --privileged tonistiigi/binfmt --install arm64`. Apple Silicon hosts can skip this — `linux/arm64` builds run natively.
 - Terraform `1.10.5` (matches CI `hashicorp/setup-terraform`).
 - `jq` for parsing the AWS CLI output in step 3.
 
@@ -205,13 +211,12 @@ export AWS_REGION=ap-southeast-2
 export IMAGE_TAG=$(git rev-parse --short HEAD)
 
 # 1) Build the container image (linux/arm64 to match infra/compute.tf).
+docker buildx inspect --bootstrap >/dev/null
 docker buildx build --platform linux/arm64 --load -t giggly-gusts:$IMAGE_TAG .
 
 # 2) Resolve the ECR repository URL from Terraform outputs.
-cd infra
-terraform init
-ECR_URL=$(terraform output -raw ecr_repository_url)
-cd -
+terraform -chdir=infra init
+ECR_URL=$(terraform -chdir=infra output -raw ecr_repository_url)
 
 # 3) Authenticate Docker to ECR and push the tag, then capture the immutable digest.
 aws ecr get-login-password --region "$AWS_REGION" \
@@ -226,9 +231,8 @@ IMAGE_DIGEST=$(aws ecr describe-images \
 IMAGE_URI="${ECR_URL}@${IMAGE_DIGEST}"
 
 # 4) Plan and apply Terraform with the immutable digest reference.
-cd infra
-terraform plan  -var "container_image=${IMAGE_URI}"
-terraform apply -var "container_image=${IMAGE_URI}"
+terraform -chdir=infra plan  -var "container_image=${IMAGE_URI}"
+terraform -chdir=infra apply -var "container_image=${IMAGE_URI}"
 ```
 
 Notes:
@@ -239,12 +243,16 @@ Notes:
 
 ### Smoke commands (documented, copy-pasteable)
 
-After a hypothetical apply, verify the deployment against the **stable Phase 4 / 6 contract** (`/health`, `/weather`):
+After a hypothetical apply, verify the deployment against the **stable Phase 4 / 6 contract** (`/health`, `/weather`).
+
+> **`api_base_url` is currently a Terraform `null`** — the API fronting slice (API Gateway HTTP API or Lambda Function URL) lands in a later phase, at which point that output will populate (and the matching `check` block in [`infra/outputs.tf`](./infra/outputs.tf) will go away). Until then the snippet below detects the missing value and skips the curls cleanly so a fresh paste does not `curl null/health`. Substitute the deployed URL by hand if you need to smoke an out-of-band deployment.
 
 ```bash
-cd infra
-BASE_URL=$(terraform output -raw api_base_url)
-cd -
+BASE_URL=$(terraform -chdir=infra output -raw api_base_url 2>/dev/null || true)
+if [ -z "$BASE_URL" ] || [ "$BASE_URL" = "null" ]; then
+  echo "Skipping smoke: api_base_url is not wired yet (substitute the deployed URL by hand once the fronting slice lands)."
+  exit 0
+fi
 
 # /health -> 200 with status=ok and the active environment surfaced.
 curl -sS -i "$BASE_URL/health"
@@ -263,17 +271,16 @@ curl -sS -o /dev/null -w 'http=%{http_code} time=%{time_total}s\n' \
 Robustness rules:
 
 - **`source ∈ {live, fallback}` is acceptable** for the smoke success case — Open-Meteo is a public dependency and can be transiently unreachable; the [Live path failure policy](#get-weather-mock-or-live) (Option A) explicitly serves the AU fallback rather than 5xx, and that *is* the contract. The functional shape (200 + the four fields `city / tempC / condition / source`) is what smoke must enforce.
-- **Maintenance.** If `MAINTENANCE_MODE=true` was applied, the documented [maintenance response](#maintenance-mode) (`503` ProblemDetails + `Cache-Control: no-store`) is the expected `curl` output; smoke must treat that as **success-of-mode**, not as a smoke failure.
-- **`api_base_url` is currently a Terraform `null`** — the API fronting slice (API Gateway HTTP API or Lambda Function URL) lands in a later phase, at which point this output will populate. Until then, substitute the deployed URL by hand or skip the smoke step; the `terraform plan` still validates the rest of the stack.
+- **Maintenance.** If `Weather__MaintenanceMode=true` was applied (the env-var name a maintainer will see in `terraform plan` output and in [`infra/compute.tf`](./infra/compute.tf)), the documented [maintenance response](#maintenance-mode) (`503` ProblemDetails + `Cache-Control: no-store`) is the expected `curl` output; smoke must treat that as **success-of-mode**, not as a smoke failure.
 
 ### Rollback
 
 There is **no automated rollback** in this phase — by design. To revert, re-run the manual sequence above with the **previous image digest** as the value of `-var "container_image=..."` and re-apply:
 
 ```bash
+ECR_URL=$(terraform -chdir=infra output -raw ecr_repository_url)
 PREVIOUS_DIGEST="sha256:<digest captured from the prior deploy>"
-cd infra
-terraform apply -var "container_image=${ECR_URL}@${PREVIOUS_DIGEST}"
+terraform -chdir=infra apply -var "container_image=${ECR_URL}@${PREVIOUS_DIGEST}"
 ```
 
 Because `aws_lambda_function.publish = true` (Phase 6), every applied digest cuts a fresh Lambda **version** and the `live` alias flips atomically to it; rolling back is the same operation against the older digest.

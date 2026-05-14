@@ -85,9 +85,27 @@ output "lambda_function_version" {
 
 # Phase 7 placeholder: the runbook references `api_base_url` but no public HTTP fronting
 # (API Gateway / CloudFront / Lambda Function URL) is wired yet — those land in a later
-# slice. Emitting null here keeps `terraform output api_base_url` working and signals that
-# the maintainer must substitute the actual URL until the fronting slice lands.
+# slice. Until then the output is driven by `var.api_base_url_override` (default `null`),
+# so PR CI's `terraform plan` stays green; the `check` block below surfaces the readable
+# error message during every plan/apply so an operator attempting a real deploy is told
+# exactly why the URL is missing, and the README runbook wraps the `terraform output -raw`
+# call in a shell guard so copy-paste smoke skips cleanly instead of curling `null/health`.
+# Once the fronting slice lands, that resource's invoke URL replaces this override (or set
+# TF_VAR_api_base_url_override out-of-band to point smoke at an existing deployment).
+variable "api_base_url_override" {
+  description = "Escape hatch for the Phase 7 plan-only runbook: once the API fronting slice lands, this is replaced by the real invoke URL output. Default null causes the check below to fire."
+  type        = string
+  default     = null
+}
+
 output "api_base_url" {
   description = "Public base URL for /health and /weather. Null until the API fronting slice (API Gateway HTTP API or Function URL) lands; see README 'Deployment story (plan-only)'."
-  value       = null
+  value       = var.api_base_url_override
+}
+
+check "api_base_url_wired" {
+  assert {
+    condition     = var.api_base_url_override != null
+    error_message = "api_base_url is not yet wired. The API fronting slice (API Gateway HTTP API or Lambda Function URL) lands in a later phase. Substitute the deployed URL by hand for smoke until then."
+  }
 }
