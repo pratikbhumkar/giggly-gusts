@@ -92,6 +92,16 @@ variable "weather_http" {
   }
 }
 
+variable "weather_cache_seconds" {
+  description = "Phase 8 cache TTL (seconds) for successful live lookups. 0 disables. Default 120 matches Cache-Control: max-age=120."
+  type        = number
+  default     = 120
+  validation {
+    condition     = var.weather_cache_seconds >= 0
+    error_message = "weather_cache_seconds must be >= 0."
+  }
+}
+
 variable "open_meteo_base_url" {
   description = "Base URL for the Open-Meteo client (override only for staging / offline test mocks)."
   type        = string

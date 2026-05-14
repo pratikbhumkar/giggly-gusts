@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace GigglyGusts.Host.Configuration;
 
 /// <summary>
@@ -13,6 +15,10 @@ public sealed class WeatherOptions
 
     /// <summary>When true, short-circuit weather routes with a documented 503 response without calling any provider.</summary>
     public bool MaintenanceMode { get; init; }
+
+    /// <summary>IMemoryCache TTL for successful live lookups (seconds). 0 disables the decorator.</summary>
+    [Range(0, 86_400)]
+    public int CacheSeconds { get; init; } = 120;
 
     public OpenMeteoSettings OpenMeteo { get; init; } = new();
 

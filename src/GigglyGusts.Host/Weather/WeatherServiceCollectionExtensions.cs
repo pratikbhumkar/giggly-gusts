@@ -1,4 +1,5 @@
 using GigglyGusts.Host.Configuration;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 
 namespace GigglyGusts.Host.Weather;
@@ -18,8 +19,10 @@ public static class WeatherServiceCollectionExtensions
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        services.AddMemoryCache();
         services.AddSingleton<MockWeatherProvider>();
         services.AddSingleton<OpenMeteoWeatherProvider>();
+        services.AddSingleton<WeatherProviderRouter>();
 
         services.AddHttpClient(OpenMeteoWeatherProvider.HttpClientName, (sp, client) =>
         {
@@ -29,7 +32,10 @@ public static class WeatherServiceCollectionExtensions
             client.DefaultRequestHeaders.UserAgent.ParseAdd("giggly-gusts/0.1 (+https://github.com/pratikbhumkar/giggly-gusts)");
         });
 
-        services.AddSingleton<IWeatherProvider, WeatherProviderRouter>();
+        services.AddSingleton<IWeatherProvider>(sp => new CachingWeatherProvider(
+            sp.GetRequiredService<WeatherProviderRouter>(),
+            sp.GetRequiredService<IMemoryCache>(),
+            sp.GetRequiredService<IOptionsMonitor<WeatherOptions>>()));
 
         return services;
     }
