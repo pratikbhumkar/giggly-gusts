@@ -37,6 +37,7 @@ locals {
 
     Weather__UseOpenMeteo           = tostring(var.use_open_meteo)
     Weather__MaintenanceMode        = tostring(var.maintenance_mode)
+    Weather__CacheSeconds           = tostring(var.weather_cache_seconds)
     Weather__OpenMeteo__BaseUrl     = var.open_meteo_base_url
     Weather__Http__AttemptTimeoutMs = tostring(var.weather_http.attempt_timeout_ms)
     Weather__Http__MaxRetries       = tostring(var.weather_http.max_retries)
